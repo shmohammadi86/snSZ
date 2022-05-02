@@ -1,0 +1,461 @@
+---
+title: "Analyze DE geens"
+subtitle: "Initial assessment of DE results"
+author: "Shahin Mohammadi"
+date: "Run on `r Sys.time()`"
+documentclass: article
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+```{r setup, include=FALSE}
+suppressPackageStartupMessages({
+library(ACTIONet)
+library(data.table)
+library(ggplot2)
+library(ggrepel)
+library(cowplot)
+library(corrplot)
+library(muscat)
+library(synapser)
+library(synExtra)
+synLogin(rememberMe = TRUE)
+source("functions.R")
+})
+
+knitr::opts_chunk$set(
+	eval = FALSE,
+	error = FALSE,
+	message = FALSE,
+	warning = FALSE,
+	cache = TRUE,
+	dev = c("png", "pdf"),
+	include = FALSE,
+	tidy = FALSE
+)
+
+
+```
+
+
+```{r}
+dataset.path = "~/submission/datasets/"
+figures.path = "~/submission/figures"
+tables.path = "~/submission/tables"
+input.path = "~/submission/input"
+
+```
+
+
+
+# Setup environment
+
+
+```{r}
+ACTIONet_summary = loadDataset("ACTIONet_summary", dataset.path = dataset.path)
+
+# Raw pseudobulk profiles
+pb.sce = loadDataset("pseudobulk_mean_logcounts", dataset.path = dataset.path)
+
+# Individual DEs
+resDE = loadDataset("Cohort_specific_DE_results_final", dataset.path = dataset.path)
+McLean.tbls = resDE$McLean$table$PhenotypeSZ
+MtSinai.tbls = resDE$MtSinai$table$PhenotypeSZ
+common.celltypes = intersect(names(MtSinai.tbls), names(McLean.tbls))
+common.celltypes = common.celltypes[!grepl("--", common.celltypes)]
+
+# DE meta-analysis results
+DE.new = loadDataset("DE_genes_pseudobulk_final", dataset.path = dataset.path)
+Up.genes = DE.new$Up.genes[common.celltypes]
+Down.genes = DE.new$Down.genes[common.celltypes]
+DE.sc = DE.new$DE.sc[, common.celltypes]
+X = cbind(sapply(DE.new$Up.genes, length),sapply(DE.new$Down.genes, length))
+ordered.celltypes = rownames(X)[order(apply(X, 1, sum), decreasing = T)]
+
+# Cell type info, including celltype_colors for visualization
+celltypes.df = loadDataset("celltype_stats", dataset.path = file.path(tables.path, "rds"))
+celltype_colors = celltypes.df$color
+names(celltype_colors) = celltypes.df$celltype
+
+
+celltype.gene.spec = loadDataset("celltype_gene_specificity", dataset.path = dataset.path)
+
+# SZ.gs = loadDataset("SCZ_associated_genesets_extended", dataset.path = input.path)
+# SynGO = readr::read_rds("~/BD/results/datasets/SynGO.rds")
+
+
+```
+
+
+
+# Compute overlap of selected DE genes with bulk (PEC)
+```{r}
+Up.genes.overlap = sapply(Up.genes, function(gs) intersect(gs, SZ.gs$`DE.Up (PEC)`))
+Up.genes.size = sapply(Up.genes.overlap, length) 
+Up.En = assess.genesets(Up.genes[ordered.celltypes], SZ.gs[c(5, 6)], nrow(pb.sce), correct = "local")[, 1]
+
+Down.genes.overlap = sapply(Down.genes, function(gs) intersect(gs, SZ.gs$`DE.Down (PEC)`))
+Down.genes.size = sapply(Down.genes.overlap, length) 
+Down.En = assess.genesets(Down.genes[ordered.celltypes], SZ.gs[c(5, 6)], nrow(pb.sce), correct = "local")[, 2]
+
+
+DE.overlap.tbl = data.frame(Celltype = ordered.celltypes, Up = sapply(Up.genes[ordered.celltypes], length), Up_vs_bulk_count = Up.genes.size, Up_vs_bulk_enrichment = Up.En, Down = sapply(Down.genes[ordered.celltypes], length), Down_vs_bulk_count = Down.genes.size, Down_vs_bulk_enrichment = Down.En)
+
+storeTable(list(DE_vs_bulk = DE.overlap.tbl), "DE_vs_bulk_overlap", tables.path = tables.path)
+
+```
+
+
+# Plot the total number of DE genes
+```{r}
+celltype.celltype_colors = celltype_colors[names(Up.genes)]
+# names(celltype.celltype_colors) = names(Up.genes)
+
+df.Up = data.frame(Counts = sapply(Up.genes, function(x) length(setdiff(x, SZ.gs$`DE.Up (PEC)`))), Celltype = names(Up.genes), Direction="Up", Color = celltype.celltype_colors[names(Up.genes)], stringsAsFactors = F)
+
+df.UpandBulk = data.frame(Counts = sapply(Up.genes, function(x) length(intersect(x, SZ.gs$`DE.Up (PEC)`))), Celltype = names(Up.genes), Direction="Up & Bulk", Color = celltype.celltype_colors[names(Up.genes)], stringsAsFactors = F)
+
+
+df.Down = data.frame(Counts = -sapply(Down.genes, function(x) length(setdiff(x, SZ.gs$`DE.Down (PEC)`))), Celltype = names(Down.genes), Direction="Down", Color = celltype.celltype_colors[names(Down.genes)], stringsAsFactors = F)
+
+df.DownandBulk = data.frame(Counts = -sapply(Down.genes, function(x) length(intersect(x, SZ.gs$`DE.Down (PEC)`))), Celltype = names(Down.genes), Direction="Down & Bulk", Color = celltype.celltype_colors[names(Down.genes)], stringsAsFactors = F)
+
+
+
+df = rbind(df.Up, df.UpandBulk, df.Down, df.DownandBulk)
+
+total.Up = sapply(Up.genes, length)
+total.Down = sapply(Down.genes, length)
+
+set.seed(0)
+# total = total.Up + total.Down + 0.001*rnorm(length(Up.genes))
+total = apply(cbind(total.Up, total.Down), 1, max)
+
+arch.perm = order(total, decreasing = F)
+# df$Celltype = factor(df$Celltype, rev(ordered.celltypes))
+df$Celltype = factor(df$Celltype, rev(intersect(names(celltype_colors), names(Up.genes))))
+
+
+gg = ggplot(data = df, aes(x = Celltype, y = Counts, fill = Direction)) + geom_bar(stat = "identity")+
+  coord_flip()+ylab("Sorted Celltypes")+
+labs(y = "# Genes", x = "Sorted Celltypes")+
+  theme_minimal()+
+  guides(fill = FALSE)+ scale_fill_manual(values=c("#3288bd", colorspace::darken("#3288bd", 0.35), "#d53e4f", colorspace::darken("#d53e4f", 0.35))) + theme(axis.text.y = element_text(face="bold", color=celltype.celltype_colors[levels(df$Celltype)], size=12, angle=0), axis.text.x = element_text(face="bold", color="black", size=12, angle=0), axis.title = element_text(face="bold", size=14, angle=0))
+
+
+
+storeFigure(gg, name = "NumDysregGenes_unsorted", extension = "pdf", width = 8, height = 6, figures.path = figures.path)
+
+```
+
+
+# Generate supplementary plots
+
+## Volcano plot
+### Excitatory neurons
+```{r}
+require(EnhancedVolcano)
+
+idx = grep("^Ex", colnames(DE.new$DE.sc))
+Grobs = vector("list", length(idx))
+for(i in 1:length(idx)) {
+  k = idx[[i]]
+  df = data.frame("log2FoldChange" = DE.new$logFC[, k], "pvalue" = 10^(-DE.new$logPvals[, k]))
+  rownames(df) = rownames(DE.new$DE.sc)
+  df = df[df$log2FoldChange != 0, ]
+  
+  keyvals <- rep('#cccccc', nrow(df))
+  names(keyvals) <- rep('None', nrow(df))
+  
+  keyvals[which( (df$log2FoldChange > 0.1) & (df$pvalue < 0.05) )] <- '#ca0020'
+  names(keyvals)[which( (df$log2FoldChange > 0.1) & (df$pvalue < 0.05) )] <- rep('Up', sum(keyvals == '#ca0020'))
+  
+  keyvals[which( (df$log2FoldChange < -0.1) & (df$pvalue < 0.05) )] <- '#0571b0'
+  names(keyvals)[which( (df$log2FoldChange < -0.1) & (df$pvalue < 0.05) )] <- rep('Down', sum(keyvals == '#0571b0'))
+  
+  
+ 
+ Grobs[[i]] = EnhancedVolcano(df,
+  lab = rownames(df),
+  x = 'log2FoldChange',
+  y = 'pvalue', pCutoff = 0.05, FCcutoff = 0.1, xlim = c(-0.6, 0.6), ylim = c(0, 5), title = "Excitatory neurons", subtitle = colnames(DE.new$logFC)[[k]], colCustom = keyvals, labCol = 'black',
+    labFace = 'bold', caption = "")
+}  
+
+gg <- gridExtra::marrangeGrob(grobs = Grobs, nrow = 3, ncol = 4)
+
+storeFigure(gg, name = "Volcano_Ex", extension = "pdf", width = 12*4, height = 8*3, figures.path = figures.path)
+
+```
+
+### Inhibitory neurons
+```{r}
+require(EnhancedVolcano)
+
+
+idx = grep("^In", colnames(DE.new$DE.sc))
+Grobs = vector("list", length(idx))
+for(i in 1:length(idx)) {
+  k = idx[[i]]
+  df = data.frame("log2FoldChange" = DE.new$logFC[, k], "pvalue" = 10^(-DE.new$logPvals[, k]))
+  rownames(df) = rownames(DE.new$DE.sc)
+  df = df[df$log2FoldChange != 0, ]
+  
+  keyvals <- rep('#cccccc', nrow(df))
+  names(keyvals) <- rep('None', nrow(df))
+  
+  keyvals[which( (df$log2FoldChange > 0.1) & (df$pvalue < 0.05) )] <- '#ca0020'
+  names(keyvals)[which( (df$log2FoldChange > 0.1) & (df$pvalue < 0.05) )] <- rep('Up', sum(keyvals == '#ca0020'))
+  
+  keyvals[which( (df$log2FoldChange < -0.1) & (df$pvalue < 0.05) )] <- '#0571b0'
+  names(keyvals)[which( (df$log2FoldChange < -0.1) & (df$pvalue < 0.05) )] <- rep('Down', sum(keyvals == '#0571b0'))
+  
+  
+ 
+ Grobs[[i]] = EnhancedVolcano(df,
+  lab = rownames(df),
+  x = 'log2FoldChange',
+  y = 'pvalue', pCutoff = 0.05, FCcutoff = 0.1, xlim = c(-0.6, 0.6), ylim = c(0, 5), title = "Inhibitory neurons", subtitle = colnames(DE.new$logFC)[[k]], colCustom = keyvals, labCol = 'black',
+    labFace = 'bold', caption = "")
+}  
+
+
+gg <- gridExtra::marrangeGrob(grobs = Grobs, nrow = 3, ncol = 3)
+storeFigure(gg, name = "Volcano_In", extension = "pdf", width = 12*3, height = 8*3, figures.path = figures.path)
+
+
+```
+
+### Glial cell types
+```{r}
+require(EnhancedVolcano)
+
+
+idx = which(!grepl("^In|^Ex", colnames(DE.new$DE.sc)))
+Grobs = vector("list", length(idx))
+for(i in 1:length(idx)) {
+  k = idx[[i]]
+  df = data.frame("log2FoldChange" = DE.new$logFC[, k], "pvalue" = 10^(-DE.new$logPvals[, k]))
+  rownames(df) = rownames(DE.new$DE.sc)
+  df = df[df$log2FoldChange != 0, ]
+  
+  keyvals <- rep('#cccccc', nrow(df))
+  names(keyvals) <- rep('None', nrow(df))
+  
+  keyvals[which( (df$log2FoldChange > 0.1) & (df$pvalue < 0.05) )] <- '#ca0020'
+  names(keyvals)[which( (df$log2FoldChange > 0.1) & (df$pvalue < 0.05) )] <- rep('Up', sum(keyvals == '#ca0020'))
+  
+  keyvals[which( (df$log2FoldChange < -0.1) & (df$pvalue < 0.05) )] <- '#0571b0'
+  names(keyvals)[which( (df$log2FoldChange < -0.1) & (df$pvalue < 0.05) )] <- rep('Down', sum(keyvals == '#0571b0'))
+  
+  
+ 
+ Grobs[[i]] = EnhancedVolcano(df,
+  lab = rownames(df),
+  x = 'log2FoldChange',
+  y = 'pvalue', pCutoff = 0.05, FCcutoff = 0.1, xlim = c(-0.6, 0.6), ylim = c(0, 5), title = "Non-neuronal", subtitle = colnames(DE.new$logFC)[[k]], colCustom = keyvals, labCol = 'black',
+    labFace = 'bold', caption = "")
+}  
+
+gg <- gridExtra::marrangeGrob(grobs = Grobs, nrow = 2, ncol = 3)
+storeFigure(gg, name = "Volcano_Glial", extension = "pdf", width = 12*3, height = 8*2, figures.path = figures.path)
+
+
+```
+
+# Functional enrichment
+## Perform functional enrichment using gProfiler
+```{r eval=FALSE, include=FALSE}
+GS = c(Up.genes, Down.genes)
+names(GS) = c(paste("Up_", names(Up.genes), sep = ""),paste("Down_", names(Down.genes), sep = ""))
+
+black.list = rownames(pb.sce)[grep("^MT-", rownames(pb.sce))]
+filtered.GS = lapply(GS, function(genes) {
+  filter.genes = setdiff(genes, black.list)
+})
+
+gost.out = gprofiler2::gost(filtered.GS, exclude_iea = TRUE, multi_query = T, source = c("GO:BP"))
+
+DE.gp = gost.out$result
+
+DE.gp = DE.gp[, -11]
+
+storeDataset(DE.gp, name = "DE_gProfiler_enrichment", dataset.path = dataset.path)
+
+
+```
+
+```{r}
+DE.gp = loadDataset(name = "DE_gProfiler_enrichment", dataset.path = dataset.path)
+# DE.gp = openxlsx::read.xlsx("~/results/tables/gProfiler_results_noMT.xlsx")
+# DE.gp$p_values = lapply(DE.gp$p_values, function(x) sapply(str_split(x, ", "), as.numeric))
+
+```
+
+## Parse tables
+```{r}
+tbl = DE.gp[ -11]
+Up.DE.tbls = lapply(1:length(Up.genes), function(k) {
+  print(k)
+  parts = apply(tbl, 2, function(x) {
+    if(min(sapply(x, length)) > 1) {
+      z = lapply(x, function(y) y[[k]])
+    } else {
+      return(x)
+    }
+  })
+  
+  sub.tbl = as.data.frame(do.call(cbind, parts))
+  sub.tbl = sub.tbl[order(as.numeric(sub.tbl$p_values)), ]
+  sub.tbl = sub.tbl[sub.tbl$significant == T, ]
+  
+  return(sub.tbl)
+})
+names(Up.DE.tbls) = names(Up.genes)
+Up.DE.tbls = Up.DE.tbls[sapply(Up.DE.tbls, nrow) > 0]
+
+Down.DE.tbls = lapply((length(Up.genes)+1):(length(Down.genes)+length(Up.genes)), function(k) {
+  print(k)
+  parts = apply(tbl, 2, function(x) {
+    if(min(sapply(x, length)) > 1) {
+      z = lapply(x, function(y) y[[k]])
+    } else {
+      return(x)
+    }
+  })
+  
+  sub.tbl = as.data.frame(do.call(cbind, parts))
+  sub.tbl = sub.tbl[order(as.numeric(sub.tbl$p_values)), ]
+  sub.tbl = sub.tbl[sub.tbl$significant == T, ]
+  
+  return(sub.tbl)
+})
+names(Down.DE.tbls) = names(Down.genes)
+Down.DE.tbls = Down.DE.tbls[sapply(Down.DE.tbls, nrow) > 0]
+
+
+```
+
+## Export gProfiler results as excel tables
+```{r}
+storeTable(Up.DE.tbls, name = "Up_DE_gProfiler", tables.path = tables.path)
+storeTable(Down.DE.tbls, name = "Down_DE_gProfiler", tables.path = tables.path)
+
+```
+
+
+# Group enriched terms into "themes" using *rrvgo*
+```{r}
+  require(rrvgo)
+  
+  simMatrix <- calculateSimMatrix(DE.gp$term_id,
+                                  orgdb="org.Hs.eg.db",
+                                  ont="BP",
+                                  method="Rel")
+  
+
+  set.seed(0)
+  # scores = sapply(DE.gp$result$p_values, function(pval) combine.logPvals(-log10(as.matrix(pval))))
+  scores = sapply(DE.gp$p_values, function(pval) max(-log10(pval)))
+  names(scores) = DE.gp$term_id
+  DE.gp$scores = scores
+
+  reducedTerms <- reduceSimMatrix(simMatrix,
+                                  scores,
+                                  threshold=0.9,
+                                  orgdb="org.Hs.eg.db")
+  
+  pdf(sprintf("%s/DE_treemapPlot_large_maxScore.pdf", figures.path), width = 8, height = 6)
+  treemapPlot(reducedTerms)
+  dev.off()
+  
+```
+
+# Combine individual GO terms at the level of term clusters
+```{r}
+DE.gp.enrichment = -log10(t(do.call(cbind, DE.gp$p_values)))
+rownames(DE.gp.enrichment) = DE.gp$term_name
+
+IDX = split(reducedTerms$term, reducedTerms$cluster)
+ll = sapply(IDX, length)
+IDX = IDX[ll >= 2]
+combined_enrichment = do.call(rbind, lapply(IDX, function(idx) combine.logPvals(DE.gp.enrichment[idx, , drop = F])))
+
+combined_enrichment[combined_enrichment < 0] = 0
+combined_enrichment.corrected = -log(apply(combined_enrichment, 2, function(x) p.adjust(10^(-x), method = "fdr")))
+
+combined_enrichment.corrected.up = combined_enrichment.corrected[, 1:length(Up.genes)]
+colnames(combined_enrichment.corrected.up) = names(Up.genes)
+combined_enrichment.corrected.up = combined_enrichment.corrected.up[, fast_column_sums(combined_enrichment.corrected.up > -log(0.05)) > 0]
+
+combined_enrichment.corrected.down = combined_enrichment.corrected[, (length(Up.genes)+1):(length(Up.genes) + length(Down.genes))]
+colnames(combined_enrichment.corrected.down) = names(Down.genes)
+combined_enrichment.corrected.down = combined_enrichment.corrected.down[, fast_column_sums(combined_enrichment.corrected.down > -log(0.05)) > 0]
+
+# 
+# ha_rows = rowAnnotation(df = list("Class" = FunCat.annotation), col = list("Class" = FunCatPal), annotation_legend_param = list("Class"=list(title_gp = gpar(fontsize = 0), labels_gp = gpar(fontsize = 10))))
+
+
+
+annots = sapply(IDX, function(idx) {
+  rr = match(idx, DE.gp$term_name)
+  ii = which.max(scores[rr])
+  tt = DE.gp$term_name[rr[[ii]]]
+  return(tt)
+})
+
+
+X.U = (combined_enrichment.corrected.up)
+redCol_fun = circlize::colorRamp2(c(0, exp(quantile(log(X.U)[X.U > -log(0.05)], seq(0.05, 0.75, length.out = 12)))), c("#ffffff", pals::brewer.reds(12)))
+
+X.D = (combined_enrichment.corrected.down)
+blueCol_fun = circlize::colorRamp2(c(0, exp(quantile(log(X.D)[X.D > -log(0.05)], seq(0.05, 0.75, length.out = 12)))), c("#ffffff", pals::brewer.blues(12)))
+
+row.names(X.U) = rownames(X.D) = annots
+X.U[X.U < -log(0.05)] = NA
+X.D[X.D < -log(0.05)] = NA
+
+ht = Heatmap(X.U, rect_gp = gpar(col = "black"), name = "Up", column_title = "Up", cluster_rows = F, cluster_columns = F, col = redCol_fun, row_names_side = "left",  column_names_gp = gpar(fontsize = 14, fontface="bold", col = celltype_colors[colnames(X.U)]), row_names_gp = gpar(fontsize = 14, fontface="bold"), column_title_gp = gpar(fontsize = 18, fontface="bold"), row_title_gp = gpar(fontsize = 18, fontface="bold"), row_names_max_width = unit(150, "cm"), column_names_max_height = unit(150, "cm"), na_col = "lightgrey")+
+Heatmap(X.D, rect_gp = gpar(col = "black"), name = "Down", cluster_rows = F, cluster_columns = F, col = blueCol_fun, row_names_side = "left", column_title = "Down",  column_names_gp = gpar(fontsize = 14, fontface="bold", col = celltype_colors[colnames(X.D)]), row_names_gp = gpar(fontsize = 14, fontface="bold"), column_title_gp = gpar(fontsize = 18, fontface="bold"), row_title_gp = gpar(fontsize = 18, fontface="bold"), row_names_max_width = unit(150, "cm"), column_names_max_height = unit(150, "cm"), na_col = "lightgrey")
+
+storeFigure(ht, name = "DE_gProfiler_Simplified_annotated_treemap_min5", extension = "pdf", width = 14, height = 5, figures.path = figures.path)
+
+
+```
+
+```{r}
+IDX.all = split(reducedTerms$term, reducedTerms$cluster)
+annots.all = sapply(IDX.all, function(idx) {
+  rr = match(idx, DE.gp$result$term_name)
+  ii = which.max(scores[rr])
+  tt = DE.gp$result$term_name[rr[[ii]]]
+  return(tt)
+})
+
+# tbl$scores = scores
+tbl$cluster = reducedTerms$cluster # annots.all[reducedTerms$cluster]
+
+storeTable(list(gProfiler = tbl), "gProfiler_results_noMT", tables.path = tables.path)
+
+```
+
+
+
+
+# Visualize selected genes
+```{r}
+genes = openxlsx::read.xlsx(file.path(input.path, "TopGenestoVis.xlsx"), sheet = 2)
+
+RdBu.pal = circlize::colorRamp2(seq(-3, 3, length.out = 9), rev(pals::brewer.rdbu(9)))
+ht = c()
+for(i in 1:ncol(genes)) {
+  x = genes[, i]
+  tbl = t(DE.new$DE.sc[match(x, rownames(DE.new$DE.sc)), ])
+  ht = ht + Heatmap(tbl, rect_gp = gpar(col = "black"), col = RdBu.pal, name = "Signed enrichment", show_row_dend = F, show_column_dend = F, cluster_rows = F, row_names_gp = gpar(col = celltype_colors), column_title = colnames(genes)[[i]], row_names_side = "left")
+}
+
+storeFigure(ht, name = "reproducible_genes_topDEs", extension = "pdf", width = 16, height = 8, figures.path = figures.path)
+
+```
+

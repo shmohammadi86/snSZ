@@ -1,0 +1,195 @@
+---
+title: "temp supp analysis"
+subtitle: ''
+author: "Shahin Mohammadi"
+date: "Run on `r Sys.time()`"
+documentclass: article
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+suppressPackageStartupMessages({
+library(ACTIONet)
+library(data.table)
+library(ggplot2)
+library(ggrepel)
+library(cowplot)
+library(corrplot)
+library(muscat)
+library(synapser)
+library(synExtra)
+synLogin(rememberMe = TRUE)
+source("functions.R")
+})
+
+knitr::opts_chunk$set(
+	eval = FALSE,
+	error = FALSE,
+	message = FALSE,
+	warning = FALSE,
+	cache = TRUE,
+	dev = c("png", "pdf"),
+	include = FALSE,
+	tidy = FALSE
+)
+
+
+```
+
+
+
+
+```{r}
+dataset.path = "~/submission/datasets/"
+figures.path = "~/submission/figures"
+tables.path = "~/submission/tables"
+input.path = "~/submission/input"
+
+```
+
+
+```{r eval=FALSE, include=FALSE}
+celltypes.df = data.frame(celltype = names(colors), color = colors)
+
+spec = readr::read_rds("~/submission/datasets/celltype_gene_specificity.rds")
+
+# Top-10 markers
+# top.genes = select.top.k.features(spec, top_features = 10, normalize = F)
+# markers = sapply(seq(1, 27*10, by = 10), function(i) paste(rownames(top.genes)[i:(i+9)], collapse = ";"))
+# names(markers) = colnames(top.genes)
+# markers = markers[celltypes.df$celltype]
+markers = apply(spec, 2, function(x) paste(rownames(spec)[order(x, decreasing = T)[1:10]], collapse = ";"))
+celltypes.df$markers = markers
+
+
+celltypes.df$Total_perc = round(100*as.numeric(table(factor(ace$Celltype, celltypes.df$celltype))) / ncol(ace), 2)
+celltypes.df$Total_perc_McLean = round(100*as.numeric(table(factor(ace$Celltype[ace$Cohort == "McLean"], celltypes.df$celltype))) / sum(ace$Cohort == "McLean"), 2)
+celltypes.df$Total_perc_MtSinai = round(100*as.numeric(table(factor(ace$Celltype[ace$Cohort == "MtSinai"], celltypes.df$celltype))) / sum(ace$Cohort == "MtSinai"), 2)
+
+celltypes.df$Total_perc_CON = round(100*as.numeric(table(factor(ace$Celltype[ace$Phenotype == "CON"], celltypes.df$celltype))) / sum(ace$Phenotype == "CON"), 2)
+celltypes.df$Total_perc_SZ = round(100*as.numeric(table(factor(ace$Celltype[ace$Phenotype == "SZ"], celltypes.df$celltype))) / sum(ace$Phenotype == "SZ"), 2)
+
+
+
+DE.new = readr::read_rds("~/results/datasets/DE_genes_pseudobulk_final.rds")
+Up.genes = DE.new$Up.genes # [common.celltypes]
+Down.genes = DE.new$Down.genes #[common.celltypes]
+
+celltypes.df$Down_genes_SZ = sapply(Down.genes[celltypes.df$celltype], length)
+celltypes.dfUp_genes_SZ = sapply(Up.genes[celltypes.df$celltype], length)
+
+HMAGMA.Pvals = readr::read_rds(file.path(dataset.path, "HMAGMA_results_final.rds"))
+selected.traits = c("hmagmaAdultBrain__sz3", "hmagmaAdultBrain__bdAndSczShared", "hmagmaAdultBrain__bip2", "hmagmaAdultBrain__asd", "hmagmaAdultBrain__mdd_without_23andMe", "hmagmaAdultBrain__alz2noapoe")
+
+trait.labels = c("Schizophrenia (SZ)", "SZ & BD", "Bipolar (BD)", "Autism (ASD)", "Depression (MDD)", "Alzheimer (AD)")
+
+X = HMAGMA.Pvals[, selected.traits]
+cts = rownames(X) #intersect(names(colors), rownames(X))
+X = X[cts, ]
+# X = apply(X, 2, p.adjust)
+X = matrix(p.adjust(as.numeric(X), "fdr"), nrow = length(cts))
+# X = apply(X, 2, function(p) p.adjust(p, method = "fdr"))
+rownames(X) = cts
+rownames(X) = intersect(names(colors), rownames(X))
+X = -log(X)
+colnames(X) = trait.labels
+rownames(X) = cts
+
+
+X[X < -log(0.05)] = 0
+X[is.na(X)] = 0
+X[X > 10] = 10
+
+celltypes.df$HMAGMA_enrichment_SZ = X[celltypes.df$celltype, 1]
+
+# 
+# celltypes.df$HMAGMA_pvals_SZ = HMAGMA.Pvals[celltypes.df$celltype, "hmagmaAdultBrain__sz3"]
+# 
+schemaDF = readr::read_tsv("SCHEMA_scores.tsv")
+schemaDF$enrichment = -log(schemaDF$adjPval)
+celltypes.df$SCHEMA_enrichment_SZ = schemaDF$enrichment[match(celltypes.df$celltype, schemaDF$celltype)]
+
+
+
+
+# IDX = split(1:ncol(ace), ace$ID)
+# All.percs = sapply(IDX, function(idx) round(100*as.numeric(table(factor(ace$Celltype[idx], celltypes.df$celltype))) / length(idx), 2))
+# rownames(All.percs) = celltypes.df$celltype
+# readr::write_rds(All.percs, "~/submission/datasets/celltype_perc_per_individuals.rds")
+
+# cc = cor(All.percs, celltypes.df$Total_perc)[, 1]
+# sort(cc, decreasing = T)
+# 
+# good.samples = c("CON19", "CON15", "CON3", "CON21")
+# sapply(good.samples, function(id) sum(ace$ID == id))
+# depth = sapply(good.samples, function(id) mean(colSums(logcounts(ace)[, ace$ID == id])))
+# 
+# 
+# X = individual_metadata[good.samples, ]
+# 
+# ace.CON3 = ace[, ace$ID == "CON3"]
+# ace.CON3 = reduce.ace(ace.CON3)
+# ace.CON3 = run.ACTIONet(ace.CON3)
+# 
+# plot.ACTIONet(ace.CON3, ace.CON3$Celltype)
+# 
+# 
+# ace.CON21 = ace[, ace$ID == "CON21"]
+# ace.CON21 = reduce.ace(ace.CON21)
+# ace.CON21 = run.ACTIONet(ace.CON21)
+# 
+# plot.ACTIONet(ace.CON21, ace.CON21$Celltype)
+# 
+# 
+# ace.CON21$Celltype = correct.cell.labels(ace.CON21, ace.CON21$Celltype)
+# 
+# out = ACTIONet::compute_archetype_core_centrality(ace.CON21$ACTIONet, as.numeric(factor(ace.CON21$Celltype)))
+# ace.CON21$Celltype_centrality = out
+# ace.CON21$Celltype_color = colors[ace.CON21$Celltype]
+# gg = plot.ACTIONet(ace.CON21, ace.CON21$Celltype, trans_attr = ace.CON21$Celltype_centrality, color_attr = ace.CON21$Celltype_color, point_size = 0.7)
+# 
+# png("~/CON21_ACTIONet.png", width = 1200, height = 900, res = 150)
+# print(gg)
+# dev.off()
+# 
+# readr::write_rds(ace.CON21, "~/CON21_ACTIONet.rds")
+# 
+
+
+
+
+
+# markers = unlist(apply(spec, 2, function(x) list(rownames(spec)[order(x, decreasing = T)[1:10]])), recursive = F)
+# markers = lapply(seq(1, 27*10, by = 10), function(i) (rownames(top.genes)[i:(i+9)]))
+# names(markers) = colnames(top.genes)
+# 
+# aa = annotate.profile.using.markers(ace$unified_feature_specificity, markers)
+# annots = annotate.cells.from.archetypes.using.markers(ace, markers)
+# 
+# ClusterR::external_validation(as.numeric(factor(annots$Label)), as.numeric(factor(ace$Celltype)), "nmi")
+# ClusterR::external_validation(as.numeric(factor(annots$Label)), as.numeric(factor(ace$Celltype)), "adjusted_rand_index")
+
+
+# top.5.genes = top.5.genes[, celltypes.df$celltype]
+
+# require(ComplexHeatmap)
+# Heatmap(top.5.genes, cluster_rows = F, cluster_columns = F, rect_gp = gpar(col = "black"))
+# 
+annots = annotate.profile.using.markers(spec, Layer.markers)
+X = annots
+X[X < 2] = 0
+layer.df = as.data.frame(t(X))
+colnames(layer.df) = sapply(colnames(layer.df), function(x) paste0(str_replace(x, "t_stat_", ""), "_enrichment"))
+
+celltypes.df.ext = cbind(celltypes.df, layer.df)
+
+
+readr::write_tsv(celltypes.df.ext, "~/submission/tables/celltype_stats.tsv")
+readr::write_rds(celltypes.df.ext, "~/submission/tables/rds/celltype_stats.rds")
+
+
+```
+

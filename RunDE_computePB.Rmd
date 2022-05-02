@@ -1,0 +1,128 @@
+---
+title: "Perform DE analysis"
+subtitle: "Compute pseudobulk (PB) profiles"
+author: "Shahin Mohammadi"
+date: "Run on `r Sys.time()`"
+documentclass: article
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+suppressPackageStartupMessages({
+library(ACTIONet)
+library(data.table)
+library(ggplot2)
+library(ggrepel)
+library(cowplot)
+library(corrplot)
+library(muscat)
+library(synapser)
+library(synExtra)
+synLogin(rememberMe = TRUE)
+source("functions.R")
+})
+
+knitr::opts_chunk$set(
+	eval = FALSE,
+	error = FALSE,
+	message = FALSE,
+	warning = FALSE,
+	cache = TRUE,
+	dev = c("png", "pdf"),
+	include = FALSE,
+	tidy = FALSE
+)
+
+
+```
+
+
+
+```{r}
+dataset.path = "~/submission/datasets/"
+figures.path = "~/submission/figures"
+tables.path = "~/submission/tables"
+input.path = "~/submission/input"
+
+
+individual_metadata = loadDataset("individual_metadata", dataset.path = file.path(tables.path, "rds"))
+
+ace = loadDataset("combinedCells_ACTIONet", dataset.path = dataset.path)
+
+```
+
+
+# Convert it to SCE object
+```{r}
+sce = as(ace, "SingleCellExperiment")
+
+```
+
+# Use muscat to compute PB profiles
+```{r}
+sce$cluster_id = ace$Celltype
+sce$group_id = ace$Phenotype
+sce$sample_id = ace$ID
+
+library(muscat)
+sce$id <- paste0(sce$Phenotype, sce$sample_id)
+(sce <- prepSCE(sce,
+    kid = "cluster_id", # subpopulation assignments
+    gid = "group_id",  # group IDs (ctrl/stim)
+    sid = "sample_id",   # sample IDs (ctrl/stim.1234)
+    drop = TRUE))  # drop all other colData columns
+
+system.time( {pb.sce <- aggregateData(sce,
+    assay = "logcounts", fun = "mean",
+    by = c("cluster_id", "sample_id"))} )
+
+colData(pb.sce) = cbind(colData(pb.sce), individual_metadata[colnames(pb.sce), ])
+
+```
+
+# Compute and add capture rate of genes (average number of cells that captured a gene)
+```{r}
+capture.rate = fastRowMeans(counts(ace) > 0)
+
+require(ggpubr)
+gg = ggdensity(data.frame(capture.rate), x = "capture.rate", fill = "lightgray")+ geom_vline(xintercept = 0.05, linetype = "dashed") 
+storeFigure(gg, "capture_rate_density", figures.path = figures.path, extension = "pdf", width = 6, height = 4)
+
+rowData(pb.sce)$capture.rate = capture.rate
+
+```
+
+# Store pseudobulk profiles
+```{r}
+
+storeDataset(pb.sce, name = "pseudobulk_mean_logcounts", dataset.path = dataset.path)
+
+```
+
+
+# Prefilter outlier samples using % of excitatory neurons
+SZ33 is removed due to having > 80% ExNeu, and samples SZ3, SZ15, SZ24, SZ29 are removed due to having less than 10% ExNeu
+```{r}
+ncells = apply(table(ACTIONet_summary$metadata$Labels, ACTIONet_summary$metadata$Individual), 2, as.numeric)
+rownames(ncells) = levels(ACTIONet_summary$metadata$Labels)
+
+cs = Matrix::colSums(ncells)
+ncells.freq = 100*scale(ncells, center = F, scale = cs)
+Ex.perc = (fast_column_sums(ncells.freq[grepl("^Ex", rownames(ncells.freq)) & !grepl("^Ex-NRGN", rownames(ncells.freq)), ]))
+
+mask = (Ex.perc >= 10) & (Ex.perc <= 80) 
+pb.sce.filtered = pb.sce[, mask]
+
+```
+
+# Store filtered pseudobulk profiles
+```{r}
+
+storeDataset(pb.sce.filtered, name = "pseudobulk_mean_logcounts_filtered", dataset.path = dataset.path)
+
+```
+
+
