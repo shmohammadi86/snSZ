@@ -1,0 +1,1157 @@
+---
+title: "Analyze TPS"
+author: "Shahin Mohammadi"
+date: "Run on `r Sys.time()`"
+documentclass: article
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+suppressPackageStartupMessages({
+library(ACTIONet)
+library(data.table)
+library(ggplot2)
+library(ggrepel)
+library(cowplot)
+library(corrplot)
+library(muscat)
+library(synapser)
+library(synExtra)
+synLogin(rememberMe = TRUE)
+source("functions.R")
+})
+
+knitr::opts_chunk$set(
+	eval = FALSE,
+	error = FALSE,
+	message = FALSE,
+	warning = FALSE,
+	cache = TRUE,
+	dev = c("png", "pdf"),
+	include = FALSE,
+	tidy = FALSE
+)
+
+
+```
+
+
+```{r}
+dataset.path = "~/submission/datasets/"
+figures.path = "~/submission/figures"
+tables.path = "~/submission/tables"
+input.path = "~/submission/input"
+
+```
+
+
+
+# Setup environment
+
+```{r}
+ACTIONet_summary = loadDataset("ACTIONet_summary", dataset.path = dataset.path)
+
+# Raw pseudobulk profiles
+pb.sce = loadDataset("pseudobulk_mean_logcounts", dataset.path = dataset.path)
+
+# Individual DEs
+resDE = loadDataset("Cohort_specific_DE_results_final", dataset.path = dataset.path)
+McLean.tbls = resDE$McLean$table$PhenotypeSZ
+MtSinai.tbls = resDE$MtSinai$table$PhenotypeSZ
+common.celltypes = intersect(names(MtSinai.tbls), names(McLean.tbls))
+common.celltypes = common.celltypes[!grepl("--", common.celltypes)]
+
+# DE meta-analysis results
+DE.new = loadDataset("DE_genes_pseudobulk_final", dataset.path = dataset.path)
+Up.genes = DE.new$Up.genes[common.celltypes]
+Down.genes = DE.new$Down.genes[common.celltypes]
+DE.sc = DE.new$DE.sc[, common.celltypes]
+X = cbind(sapply(DE.new$Up.genes, length),sapply(DE.new$Down.genes, length))
+ordered.celltypes = rownames(X)[order(apply(X, 1, sum), decreasing = T)]
+
+# Cell type info, including celltype_colors for visualization
+celltypes.df = loadDataset("celltype_stats", dataset.path = file.path(tables.path, "rds"))
+celltype_colors = celltypes.df$color
+names(celltype_colors) = celltypes.df$celltype
+
+
+celltype.gene.spec = loadDataset("celltype_gene_specificity", dataset.path = dataset.path)
+
+# SZ.gs = loadDataset("SCZ_associated_genesets_extended", dataset.path = input.path)
+# SynGO = readr::read_rds("~/BD/results/datasets/SynGO.rds")
+
+
+```
+
+
+
+
+```{r}
+annotate.archetypes.using.labels <- function (ace, labels, archetype.slot = "H_unified", algorithm = "ttest") 
+{
+    Labels <- ACTIONet:::.preprocess_annotation_labels(labels, ace)
+    if (is.matrix(ace) | ACTIONetExperiment:::is.sparseMatrix(ace)) {
+        profile <- as.matrix(ace)
+    }
+    else {
+        profile <- Matrix::t(colMaps(ace)[[archetype.slot]])
+    }
+    Annot <- names(Labels)[match(sort(unique(Labels)), Labels)]
+    if (algorithm == "wilcox") {
+        wilcox.out = presto::wilcoxauc(profile, Annot[Labels])
+        # Enrichment = do.call(cbind, split(-log10(wilcox.out$pval) * 
+        #     sign(wilcox.out$auc - 0.5), wilcox.out$group))
+        Enrichment = do.call(cbind, split(wilcox.out$auc - 0.5, wilcox.out$group))  
+        logPvals = -log10(do.call(cbind, split(wilcox.out$pval, wilcox.out$group)))    
+    } else {
+        Enrichment <- sapply(Annot, function(label) {
+            mask <- names(Labels) == label
+            class.profile <- profile[, mask]
+            null.profile <- profile[, !mask]
+            N.class <- sum(mask)
+            N.null <- sum(!mask)
+            if ((N.class < 3) | (N.null < 3)) {
+                return(rep(0, nrow(profile)))
+            }
+            mu.class <- ACTIONetExperiment:::fastRowMeans(class.profile)
+            mu.null <- ACTIONetExperiment:::fastRowMeans(null.profile)
+            sigma_sq.class <- apply(class.profile, 1, var)
+            sigma_sq.null <- apply(null.profile, 1, var)
+            delta.mean <- mu.class - mu.null
+            t.stat <- delta.mean/sqrt((sigma_sq.class/N.class) + 
+                (sigma_sq.null/N.null))
+            return(t.stat)
+        })
+    }
+    Enrichment[is.na(Enrichment)] <- 0
+    archetypeLabels <- Annot[apply(Enrichment, 1, which.max)]
+    Labels.confidence <- apply(Enrichment, 1, max)
+    rownames(Enrichment) <- paste("A", 1:nrow(Enrichment), "-", 
+        archetypeLabels, sep = "")
+    out <- list(Label = archetypeLabels, Confidence = Labels.confidence, 
+        Enrichment = Enrichment)
+    if(algorithm == "wilcox")
+      out$logPvals = logPvals
+    return(out)
+}
+```
+
+
+
+# Function to compute TPS given a DE profile and pseudobulk profiles
+```{r}
+TD.scores <- function(DE.stats, pb.sce) {
+  
+  library(ppcor)
+  common.genes = intersect(rownames(DE.stats), rownames(pb.sce))
+  X.DE = DE.stats[common.genes, ]
+  TD.scores = sapply(1:ncol(X.DE), function(i) {
+    print(i)
+    x = X.DE[, i]
+  
+  	# Y = t(scale(t(assays(pb.sce)[[colnames(X.DE)[[i]]]][common.genes, ])))
+  	# stats = cor(Y, x)
+  
+  	
+  	Y = assays(pb.sce)[[colnames(X.DE)[[i]]]][common.genes, ]
+  	z = fastRowMeans(Y)
+  
+  	stats = apply(Y, 2, function(y) {
+      suppressWarnings( {out = pcor.test(x, y, z, method = c("pearson")) } )
+      out$estimate
+  	})
+  })
+  colnames(TD.scores) = colnames(X.DE)
+  rownames(TD.scores) = colnames(pb.sce)
+  TD.scores[is.na(TD.scores)] = 0
+  
+  return(TD.scores)
+  
+}
+
+
+```
+
+# Compute transcriptional deviation (TD) scores per cohort and joint DE
+```{r}
+common.celltypes = intersect(names(MtSinai.tbls), names(McLean.tbls))
+common.celltypes = common.celltypes[!grepl("--", common.celltypes)]
+
+DE.stats = matrix(0, nrow = nrow(pb.sce), ncol = length(common.celltypes))
+rownames(DE.stats) = rownames(pb.sce)
+colnames(DE.stats) = common.celltypes
+for(celltype in common.celltypes) {
+  tbl = MtSinai.tbls[[celltype]]  
+  x = tbl$t
+  # x[tbl$p_val > 0.05] = 0
+  DE.stats[tbl$gene, celltype] = x
+}
+
+MtSinai.TD.scores = TD.scores(DE.stats, pb.sce) # Use opposite cohort
+
+
+for(celltype in common.celltypes) {
+  tbl = McLean.tbls[[celltype]]  
+  x = tbl$t
+  # x[tbl$p_val > 0.05] = 0
+  DE.stats[tbl$gene, celltype] = x
+}
+
+McLean.TD.scores = TD.scores(DE.stats, pb.sce) # Use opposite cohort
+
+Combined.TD.scores = TD.scores(DE.new$tstats, pb.sce)
+
+```
+
+# Compute TPS as the mean of TD scores of the neuronal populations
+```{r}
+TPS.McLean = rowMeans(McLean.TD.scores[, grep("^Ex|^In", common.celltypes)])
+TPS.MtSinai = rowMeans(MtSinai.TD.scores[, grep("^Ex|^In", common.celltypes)])
+TPS = rowMeans(Combined.TD.scores[, grep("^Ex|^In", common.celltypes)])
+
+```
+
+
+
+```{r}
+c1 = as.character(interaction(pb.sce$Phenotype, factor(TPS.McLean > 0)))
+c1[c1 == "CON.TRUE"] = "CON_SZ-like"
+c1[c1 == "CON.FALSE"] = "CON"
+c1[c1 == "SZ.TRUE"] = "SZ"
+c1[c1 == "SZ.FALSE"] = "SZ_CON-like"
+c1 = factor(c1, c("CON", "SZ_CON-like", "SZ", "CON_SZ-like"))
+IDX1 = split(1:ncol(pb.sce), c1)
+names(IDX1) = paste("McLean", names(IDX1), sep = "_")
+
+c2 = as.character(interaction(pb.sce$Phenotype, factor(TPS.MtSinai > 0)))
+c2[c2 == "CON.TRUE"] = "CON_SZ-like"
+c2[c2 == "CON.FALSE"] = "CON"
+c2[c2 == "SZ.TRUE"] = "SZ"
+c2[c2 == "SZ.FALSE"] = "SZ_CON-like"
+c2 = factor(c2, c("CON", "SZ_CON-like", "SZ", "CON_SZ-like"))
+IDX2 = split(1:ncol(pb.sce), c2)
+names(IDX2) = paste("MtSinai", names(IDX2), sep = "_")
+
+c3 = as.character(interaction(pb.sce$Phenotype, factor(TPS > 0)))
+c3[c3 == "CON.TRUE"] = "CON_SZ-like"
+c3[c3 == "CON.FALSE"] = "CON"
+c3[c3 == "SZ.TRUE"] = "SZ"
+c3[c3 == "SZ.FALSE"] = "SZ_CON-like"
+c3 = factor(c3, c("CON", "SZ_CON-like", "SZ", "CON_SZ-like"))
+IDX3 = split(1:ncol(pb.sce), c3)
+names(IDX3) = paste("Meta", names(IDX3), sep = "_")
+
+
+IDX = c(IDX1, IDX2, IDX3)
+En = assess.genesets(IDX, IDX, ncol(pb.sce))
+
+PurPal = colorRampPalette(RColorBrewer::brewer.pal(9, "Purples"))(200)
+
+# pdf(file.path(figures.path, "sample_het_consistency_corrplot.pdf"), width = 7, height = 7)
+corrplot(En, is.corr = F, method = "pie", col = PurPal, col.lim = c(0, 60), cl.length = 6, outline = T, sig.level = 0.05, p.mat = 10^(-En), insig = "blank", tl.col = "black", diag = FALSE, order = 'hclust', addrect = 4, rect.col = 'red', rect.lwd = 3)
+# dev.off()
+
+```
+```{r}
+require(eulerr)
+require(SuperExactTest)
+
+Sets = lapply(1:4, function(k) {
+  Sets = list(McLean = IDX1[[k]], MtSinai = IDX2[[k]], Meta = IDX3[[k]])
+})
+names(Sets) = names(IDX3)
+
+pvals = rep(0, 4)
+names(pvals) = names(IDX3)
+for(k in 1:4) {
+  
+  Set = Sets[[k]]
+  
+  pdf(sprintf("%s/%s.pdf", figures.path, names(Sets)[[k]]), width = 4, height = 3)
+  print(plot(venn(Set)))
+  dev.off()
+  
+  Result=supertest(Set, n=ncol(pb.sce))
+  pvals[[k]] = Result$P.value["111"]
+}
+
+
+
+```
+
+
+```{r}
+l = as.character(c1)
+l[c1 != c2] = "-"
+
+
+
+reliable.samples = which(l != "-")
+sub.l = factor(l[reliable.samples], c("SZ", "SZ_CON-like", "CON", "CON_SZ-like"))
+
+# CPal = c(pals::brewer.paired(4), "#cccccc")
+# names(CPal) = c("CON", "SZ_CON-like", "SZ", "CON_SZ-like", "-")
+
+class.pal = c(pals::brewer.paired(4))
+names(class.pal) = c("SZ", "SZ_CON-like", "CON", "CON_SZ-like")
+
+phenotype.pal = c("#b2182b", "#2166ac")
+names(phenotype.pal) = c("SZ", "CON")
+
+RdBu_fun = circlize::colorRamp2(seq(-2.5, 2.5, length.out = 12), rev(pals::brewer.rdbu(12)))
+
+RdBu_fun.cor = circlize::colorRamp2(seq(-0.4, 0.4, length.out = 12), rev(pals::brewer.rdbu(12)))
+
+# annot.df = colData(pb.sce)
+
+
+mask = grepl("^Ex|^In", ACTIONet_summary$metadata$Celltype)
+
+A11.mean = sapply(split(ACTIONet_summary$H_unified[mask, 11], ACTIONet_summary$metadata$ID[mask]), mean)
+A17.mean = sapply(split(ACTIONet_summary$H_unified[mask, 17], ACTIONet_summary$metadata$ID[mask]), mean)
+A29.mean = sapply(split(ACTIONet_summary$H_unified[mask, 29], ACTIONet_summary$metadata$ID[mask]), mean)
+
+
+```
+
+```{r}
+df.stats = data.frame(A11 = A11.mean, A17 = A17.mean, A29 = A29.mean, TPS = TPS)#, TPS.McLean = TPS.McLean, TPS.MtSinai = TPS.MtSinai')
+# 
+# chart.Correlation(df.stats, histogram=TRUE, pch=19)
+
+df.stats$A11.z = scale(df.stats$A11)
+df.stats$A29.z = scale(df.stats$A29)
+
+df.stats$name = names(A11.mean)
+df.stats$z = (df.stats$A11.z * df.stats$A29.z)
+df.stats$label = ""
+
+df.stats$label[abs(df.stats$z) > 3] = df.stats$name[abs(df.stats$z) > 3]
+
+```
+
+
+```{r}
+library("PerformanceAnalytics")
+
+
+require(ggpubr)
+gg = ggscatter(df.stats, x = "A11.z", y = "A29.z",
+             label = "label", repel = TRUE,
+          add = "reg.line",      
+          conf.int = TRUE,        
+          size = 0.5, 
+          add.params = list(color = "blue",
+                            fill = "lightgray")
+          )+   
+  stat_cor(method = "pearson")
+
+storeFigure(gg, name = "A11_vs_A29_sample_scatter", extension = "pdf", width = 7, height = 6, figures.path = figures.path)
+
+# storeTable(df.stats, name = "A11_vs_A29_sample_spec", tables.path = tables.path)
+
+print(gg)
+
+
+df2 = data.frame(TPS = scale(c(TPS, TPS, TPS)), Arch = c(scale(A11.mean), scale(A17.mean), scale(A29.mean)), label = c(rep("A11", length(A11.mean)), rep("A17", length(A17.mean)), rep("A29", length(A29.mean))), cohort = )
+
+gg = ggscatter(df2, x = "TPS", y = "Arch",
+          add = "reg.line",                         # Add regression line
+          conf.int = TRUE,                          # Add confidence interval
+          color = "label", palette = "jco",           # Color by groups "cyl"
+          shape = "label"                             # Change point shape by groups "cyl"
+          )+
+  stat_cor(aes(color = label), label.x = 1) 
+
+
+# storeFigure(gg, name = "CS_vs_archs_scatter", extension = "pdf", width = 7, height = 6, figures.path = figures.path)
+print(gg)
+
+
+```
+```{r}
+library("PerformanceAnalytics")
+df3 = cbind(df2, colData(pb.sce[, names(TPS)]))
+
+df.McLean = df3[df3$Cohort == "McLean", ]
+
+gg = ggscatter(df.McLean, x = "TPS", y = "Arch",
+          add = "reg.line",                         # Add regression line
+          conf.int = TRUE,                          # Add confidence interval
+          color = "label", palette = "jco",           # Color by groups "cyl"
+          shape = "label"                             # Change point shape by groups "cyl"
+          )+
+  stat_cor(aes(color = label), label.x = .75) 
+
+
+storeFigure(gg, name = "CS_vs_archs_scatter_McLean", extension = "pdf", width = 7, height = 6, figures.path = figures.path)
+print(gg)
+
+
+df.MtSinai = df3[df3$Cohort == "MtSinai", ]
+
+gg = ggscatter(df.MtSinai, x = "TPS", y = "Arch",
+          add = "reg.line",                         # Add regression line
+          conf.int = TRUE,                          # Add confidence interval
+          color = "label", palette = "jco",           # Color by groups "cyl"
+          shape = "label"                             # Change point shape by groups "cyl"
+          )+
+  stat_cor(aes(color = label), label.x = 0.75) 
+
+
+storeFigure(gg, name = "CS_vs_archs_scatter_MtSinai", extension = "pdf", width = 7, height = 6, figures.path = figures.path)
+print(gg)
+
+
+
+```
+
+
+```{r}
+spec.df = data.frame(gene = rownames(ACTIONet_summary$unified_feature_specificity), A11 = (ACTIONet_summary$unified_feature_specificity[, 11]), A17 = (ACTIONet_summary$unified_feature_specificity[, 17]), A29 = (ACTIONet_summary$unified_feature_specificity[, 29]))
+
+mask = (spec.df$A11 < 0) | (spec.df$A29 < 0) | grepl("MT-", spec.df$gene)
+
+spec.df = spec.df[!mask, ]
+
+spec.df$A11.z = scale(spec.df$A11)
+spec.df$A17.z = scale(spec.df$A17)
+spec.df$A29.z = scale(spec.df$A29)
+
+spec.df$z = (spec.df$A11.z * spec.df$A29.z)
+spec.df$label = ""
+
+mean(spec.df$z)
+
+perm = order(spec.df$z, decreasing = T)[1:10]
+spec.df$label[perm] = spec.df$gene[perm]
+
+X = as.matrix(spec.df[, c(5:7)])
+rownames(X) = spec.df$gene
+
+Up.mat = (apply(X, 2, function(x) {
+  set.seed(0)
+  tbl = fgsea::fgsea(Up.genes, x, eps = 1e-100)    
+  y = -log10(tbl$padj) * sign(tbl$NES)
+  names(y) = tbl$pathway
+  y
+  # perm = order(x, decreasing = T)
+  # sorted.genes = rownames(X)[perm]
+  # sapply(Up.genes, function(genes) {
+  #   mask = as.numeric(sorted.genes %in% genes)
+  #   mhg.out = mhg::mhg_test(mask, length(mask), sum(mask), 1000, 0)
+  #   mhg.out$pvalue
+  # })
+}))
+Xu = Up.mat
+colnames(Xu) = c("Ex_SZCS", "Ex_SZTR", "In_SZCS")
+
+
+df = reshape2::melt(Xu)
+colnames(df) = c("Celltype", "Cellstate", "Enrichment")  
+df$Cellstate = factor(df$Cellstate, c("Ex_SZCS", "In_SZCS", "Ex_SZTR"))
+df$Celltype = factor(df$Celltype, intersect(as.character(df$Celltype), celltypes.df$celltype))
+require(ggpubr)
+gg = ggbarplot(df, x = "Celltype", y = "Enrichment", color = "black", fill = "Cellstate", palette = scales::alpha(ggsci:::pal_jco("default")(3)[c(1, 3, 2)], alpha = 0.75),
+ position = position_dodge(), ylim = c(0, max(Xu)))+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, color = celltype_colors)) 
+
+print(gg)
+
+storeFigure(gg, "cellstate_DEup_enrichment", extension = "pdf", width = 7, height = 4, figures.path = figures.path)
+
+
+Down.mat = (apply(X, 2, function(x) {
+  set.seed(0)
+  tbl = fgsea::fgsea(Down.genes, x, eps = 1e-100)    
+  y = -log10(tbl$padj) * sign(tbl$NES)
+  names(y) = tbl$pathway
+  y
+  # perm = order(x, decreasing = T)
+  # sorted.genes = rownames(X)[perm]
+  # sapply(Up.genes, function(genes) {
+  #   mask = as.numeric(sorted.genes %in% genes)
+  #   mhg.out = mhg::mhg_test(mask, length(mask), sum(mask), 1000, 0)
+  #   mhg.out$pvalue
+  # })
+}))
+Xd = Down.mat #[intersect(names(celltype_colors), rownames(Down.mat)), ]
+colnames(Xd) = c("Ex_SZCS", "Ex_SZTR", "In_SZCS")
+
+
+df = reshape2::melt(Xd)
+colnames(df) = c("Celltype", "Cellstate", "Enrichment")  
+df$Cellstate = factor(df$Cellstate, c("Ex_SZCS", "In_SZCS", "Ex_SZTR"))
+df$Celltype = factor(df$Celltype, intersect(as.character(df$Celltype), celltypes.df$celltype))
+require(ggpubr)
+gg = ggbarplot(df, x = "Celltype", y = "Enrichment", color = "black", fill = "Cellstate", palette = scales::alpha(ggsci:::pal_jco("default")(3)[c(1, 3, 2)], alpha = 0.75),
+ position = position_dodge(), ylim = c(0, max(Xd)))+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, color = celltype_colors)) 
+
+print(gg)
+
+storeFigure(gg, "cellstate_DEdown_enrichment", extension = "pdf", width = 7, height = 4, figures.path = figures.path)
+
+
+
+
+```
+
+```{r}
+annots = annotate.archetypes.using.labels(Matrix::t(ACTIONet_summary$H_unified), ACTIONet_summary$metadata$Celltype, algorithm = "ttest")
+
+
+X = t(annots$Enrichment[c(11, 17, 29), ])
+X[X < 3] = 0
+# X = X * (Matrix::t(annots$logPvals[c(11, 17, 29), ]) > -log10(0.05/length(annots$logPvals)))
+
+colnames(X) = c("Ex_SZCS", "Ex_SZTR", "In_SZCS")
+
+
+df = reshape2::melt(X)
+colnames(df) = c("Celltype", "Cellstate", "Enrichment")  
+df$Cellstate = factor(df$Cellstate, c("Ex_SZCS", "In_SZCS", "Ex_SZTR"))
+df$Celltype = factor(df$Celltype, intersect(as.character(df$Celltype), celltypes.df$celltype))
+
+require(ggpubr)
+gg = ggbarplot(df, x = "Celltype", y = "Enrichment", color = "black", fill = "Cellstate", palette = scales::alpha(ggsci:::pal_jco("default")(3)[c(1, 3, 2)], alpha = 0.75),
+ position = position_dodge(), ylim = c(0, max(X)))+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, color = celltype_colors)) 
+
+storeFigure(gg, "cellstate_celltype_enrichment", extension = "pdf", width = 7, height = 4, figures.path = figures.path)
+
+
+
+
+
+```
+
+
+```{r}
+
+require(ggpubr)
+gg = ggscatter(spec.df, x = "A11", y = "A29",
+             label = "label", repel = TRUE,
+          add = "reg.line",      
+          color = "z",
+          conf.int = TRUE,        
+          size = 0.5, 
+          add.params = list(color = "blue",
+                            fill = "lightgray")
+          )+   
+  stat_cor(method = "pearson")
+
+storeFigure(gg, name = "A11_vs_A29_gene_scatter", extension = "pdf", width = 7, height = 6, figures.path = figures.path)
+
+storeTable(spec.df, name = "A11_vs_A29_gene_spec", tables.path = tables.path)
+
+
+```
+
+```{r}
+reliable.samples.McLean = reliable.samples[pb.sce$Cohort[reliable.samples] == "McLean"]
+
+perm = order(TPS.McLean[reliable.samples.McLean], decreasing = T)
+perm.global = reliable.samples.McLean[perm]
+
+
+ha = rowAnnotation(Phenotype = pb.sce$Phenotype[perm.global], Classification = factor(l[perm.global], c("SZ", "SZ_CON-like", "CON", "CON_SZ-like")), TPS = (TPS.McLean[perm.global]), A11 = scale(A11.mean[perm.global]), A29 = scale(A29.mean[perm.global]), A17 = scale(A17.mean[perm.global]), PRS = scale(pb.sce$PRS[perm.global]), col = list(Phenotype = phenotype.pal, Classification = class.pal, TPS = RdBu_fun.cor, A11 = RdBu_fun, A29 = RdBu_fun, A17 = RdBu_fun, PRS = RdBu_fun))
+                   
+
+ht = Heatmap(McLean.TD.scores[perm.global , ], cluster_rows = F, cluster_columns = F, split = factor(l[perm.global], c("SZ", "SZ_CON-like", "CON", "CON_SZ-like")), row_names_side = "left", name = "Correlation", rect_gp = gpar(col = "black"), column_names_gp = gpar(col = celltype_colors), right_annotation = ha)
+
+
+
+storeFigure(ht, "TPS_vs_CS_filtered_McLean_updated", extension = "pdf",width = 8, height = 11, figures.path = figures.path)
+
+```
+
+```{r}
+
+reliable.samples.MtSinai = reliable.samples[pb.sce$Cohort[reliable.samples] == "MtSinai"]
+
+perm = order(TPS.MtSinai[reliable.samples.MtSinai], decreasing = T)
+perm.global = reliable.samples.MtSinai[perm]
+
+        
+ha = rowAnnotation(Phenotype = pb.sce$Phenotype[perm.global], Classification = factor(l[perm.global], c("SZ", "SZ_CON-like", "CON", "CON_SZ-like")), TPS = (TPS.MtSinai[perm.global]), A11 = scale(A11.mean[perm.global]), A29 = scale(A29.mean[perm.global]), A17 = scale(A17.mean[perm.global]), PRS = scale(pb.sce$PRS[perm.global]), col = list(Phenotype = phenotype.pal, Classification = class.pal, TPS = RdBu_fun.cor, A11 = RdBu_fun, A29 = RdBu_fun, A17 = RdBu_fun, PRS = RdBu_fun))
+                   
+
+          
+
+ht = Heatmap(MtSinai.TD.scores[perm.global , ], cluster_rows = F, cluster_columns = F, split = factor(l[perm.global], c("SZ", "SZ_CON-like", "CON", "CON_SZ-like")), row_names_side = "left", name = "Correlation", rect_gp = gpar(col = "black"), column_names_gp = gpar(col = celltype_colors), right_annotation = ha)
+
+
+storeFigure(ht, "TPS_vs_CS_filtered_MtSinai_updated", extension = "pdf",width = 8, height = 17, figures.path = figures.path)
+
+
+
+
+```
+```{r}
+
+perm = order(TPS[reliable.samples], decreasing = T)
+perm.global = reliable.samples[perm]
+
+ha = rowAnnotation(Phenotype = pb.sce$Phenotype[perm.global], Classification = factor(l[perm.global], c("SZ", "SZ_CON-like", "CON", "CON_SZ-like")), TPS = (TPS[perm.global]), A11 = scale(A11.mean[perm.global]), A29 = scale(A29.mean[perm.global]), A17 = scale(A17.mean[perm.global]), PRS = scale(pb.sce$PRS[perm.global]), col = list(Phenotype = phenotype.pal, Classification = class.pal, TPS = RdBu_fun.cor, A11 = RdBu_fun, A29 = RdBu_fun, A17 = RdBu_fun, PRS = RdBu_fun))
+                   
+
+          
+
+ht = Heatmap(Combined.TD.scores[perm.global , ], cluster_rows = F, cluster_columns = F, split = factor(l[perm.global], c("SZ", "SZ_CON-like", "CON", "CON_SZ-like")), row_names_side = "left", name = "Correlation", rect_gp = gpar(col = "black"), column_names_gp = gpar(col = celltype_colors), right_annotation = ha)
+
+
+storeFigure(ht, "TPS_vs_CS_filtered_Meta_updated", extension = "pdf",width = 8, height = 17, figures.path = figures.path)
+
+
+
+```
+
+```{r}
+
+perm = order(TPS[reliable.samples], decreasing = T)
+perm.global = reliable.samples[perm]
+
+reliable.df = data.frame(Classification = factor(l[perm.global], c("SZ", "SZ_CON-like", "CON", "CON_SZ-like")), TPS = scale(TPS[perm.global]), A11 = scale(A11.mean[perm.global]), A29 = scale(A29.mean[perm.global]), A17 = scale(A17.mean[perm.global]), PRS = scale(pb.sce$PRS[perm.global]))
+
+tbl = apply(table(ACTIONet_summary$metadata$Celltype, ACTIONet_summary$metadata$ID), 2, as.numeric)
+rownames(tbl) = levels(ACTIONet_summary$metadata$Celltype)
+
+reliable.df$glial = colSums(tbl[22:27, perm.global])/colSums(tbl[, perm.global])
+
+reliable.df$pred = "SZ"
+reliable.df$pred[reliable.df$Classification %in% c("CON", "SZ_CON-like")] = "CON"
+
+
+# reliable.df = reliable.df[!is.na(reliable.df$PRS), ]
+
+dd = reshape2::melt(reliable.df[, c(1, 3:6)])
+colnames(dd)[1:3] = c("pred", "feature", "value")
+require(ggstatsplot)
+
+dd$pred = factor(dd$pred, c("CON", "SZ_CON-like", "CON_SZ-like", "SZ"))
+
+gg = grouped_ggbetweenstats(dd,
+  ## arguments relevant for ggbetweenstats
+  x = pred,
+  y = value,
+  grouping.var = feature,
+  xlab = "Continent",
+  ylab = "Life expectancy",
+  pairwise.display = "significant", ## display only significant pairwise comparisons
+  p.adjust.method = "fdr", ## adjust p-values for multiple tests using this method
+  type = "n"
+  )
+
+print(gg)
+
+```
+
+```{r}
+tbl = apply(table(ACTIONet_summary$metadata$Celltype, ACTIONet_summary$metadata$ID), 2, as.numeric)
+rownames(tbl) = levels(ACTIONet_summary$metadata$Celltype)
+
+colSums(tbl[22:27, ])
+
+
+plot(density(colSums(tbl)))
+
+
+z = scale(tbl)
+
+Heatmap(scale(tbl))
+
+
+sort(z[, "SZ33"])
+
+
+```
+
+
+```{r}
+
+arch.spec = ACTIONet_summary$unified_feature_specificity
+
+top.A29.genes = rownames(ACTIONet_summary$unified_feature_specificity)[order(arch.spec[, 29], decreasing = T)[1:50]]
+# top.A29.genes = top.A29.genes[-grep("^MT-", top.A29.genes)]
+
+corrs = do.call(cbind, lapply(1:length(assays(pb.sce)), function(k) {
+  X = assays(pb.sce)[[k]]
+  cs = colSums(X)
+  cs[cs == 0] = 1
+  X = scale(X, center = F, scale = cs)
+  X = X[top.A29.genes, ]
+  X = X[, which(l != "-")]
+  apply(X, 1, function(x) {
+    cc = cor.test(x, TPS[which(l != "-")])
+    cc$statistic
+  })
+}))
+
+colnames(corrs) = names(assays(pb.sce))
+row.perm = order(rowMaxs(corrs), decreasing = T)
+
+X = corrs
+# z.threshold = qnorm(0.05/length(corrs), lower.tail = F)
+# X[X < z.threshold] = 0
+
+ht = Heatmap(X[row.perm, ], cluster_rows = F, cluster_columns = F, rect_gp = gpar(col = "black"), column_names_gp = gpar(col = celltype_colors), name = "Correlation", row_names_side = "left")
+
+print(ht)
+```
+
+```{r}
+
+x = rowMeans(X)
+top10.A29.all = names(x)[order(x, decreasing = T)[1:30]]
+print(sort(top10.A29.all))
+
+
+x = X[, "In-PV_Basket"]
+top10.A29.basket = names(x)[order(x, decreasing = T)[1:30]]
+print(sort(top10.A29.basket))
+
+x = arch.spec[, 29]
+top10.A29 = names(x)[order(x, decreasing = T)[1:30]]
+
+print(sort(top10.A29))
+
+top.hits =(intersect(intersect(top10.A29, top10.A29.basket), top10.A29.all))
+
+idx.class = split(1:length(l), l)[-1]
+
+top.hit.means = lapply(names(assays(pb.sce)), function(nn) {
+  X = assays(pb.sce)[[nn]]
+  cs = colSums(X)
+  cs[cs == 0] = 1
+  X = scale(X, center = F, scale = cs)
+  Z = t(scale(t(X[top.hits, ])))
+  sapply(idx.class, function(idx) rowMeans(Z[, idx]))
+})
+names(top.hit.means) = names(assays(pb.sce))
+
+ht = Heatmap(top.hit.means$`In-PV_Basket`, cluster_rows = F, cluster_columns = F, name = "normalized expression", rect_gp = gpar(col = "black"), row_names_side = "left")
+storeFigure(ht, "mean_genes_topA29_PV_Basket", extension = "pdf",width = 4, height = 7, figures.path = figures.path)
+
+ht = Heatmap(top.hit.means$`In-SST`, cluster_rows = F, cluster_columns = F, name = "normalized expression", rect_gp = gpar(col = "black"), row_names_side = "left")
+
+storeFigure(ht, "mean_genes_topA29_SST", extension = "pdf",width = 4, height = 7, figures.path = figures.path)
+
+
+ggs= lapply(names(top.hit.means), function(nn) ggplotify::as.ggplot(Heatmap(top.hit.means[[nn]], cluster_rows = F, cluster_columns = F, name = "normalized expression", rect_gp = gpar(col = "black"), row_names_side = "left")))
+
+gg = ggplotify::as.ggplot(gridExtra::arrangeGrob(grobs = ggs, nrow = 5))
+storeFigure(gg, "mean_genes_topA29_all", extension = "pdf",width = 25, height = 32, figures.path = figures.path)
+
+
+
+cor.test(pb.sce$mito_perc, pb.sce$A29.signature)
+
+dd = data.frame(mito = pb.sce$mito_perc, class = l, umis = pb.sce$umis)
+dd = dd[dd$class != "-", ]
+gg = ggstatsplot::ggbetweenstats(dd, "class", "mito", type = "n")
+storeFigure(gg, "Mito_per_sample", extension = "pdf",width = 8, height = 5, figures.path = figures.path)
+
+gg = ggstatsplot::ggbetweenstats(dd, "class", "umis", type = "n")
+storeFigure(gg, "umi_per_sample", extension = "pdf",width = 8, height = 5, figures.path = figures.path)
+
+
+# hit.A29.genes = rownames(corrs)[row.perm[1:5]]
+
+
+
+```
+
+
+```{r}
+HBCC.bulk = readr::read_rds("~/results/input/HBCC_bulk_expression_SZandCON.rds")
+MPP.bulk = readr::read_rds("~/results/input/MPP_bulk_expression_SZandCON.rds")
+PEC.bulk = readr::read_rds("~/results/input/PEC_bulk_expression_SZandCON.rds")
+
+
+dd = as.data.frame(colData(MPP.bulk))
+
+```
+
+```{r}
+qpcr = readr::read_csv("~/A29_qPCR_ctvalues.csv")
+qpcr = qpcr[-13, ]
+z = as.matrix(qpcr[, 3:8])
+z = cbind(z, rowMeans(z[, -6]))
+z.orth = orthoProject(z, z[, 6])
+
+# cor.test(z.orth[, 1], TPS.McLean[qpcr$ID])
+
+# cor.test(z[, 1], TPS.McLean[qpcr$ID])
+
+
+```
+
+
+```{r}
+bulk = PEC.bulk
+expr = assays(bulk)[["normexpr"]]
+expr.ortho = orthoProject(expr, rowMeans(expr))
+diag = bulk$diagnosis
+study = bulk$contributingStudy
+IDX = split(1:ncol(bulk), study)
+
+# bulk = MPP.bulk
+# expr = assays(bulk)[["voom"]]
+# expr.ortho = orthoProject(expr, rowMeans(expr))
+# diag = bulk$Dx
+# study = bulk$Institution
+# IDX = split(1:ncol(bulk), study)
+
+
+arch.spec = ACTIONet_summary$unified_feature_specificity
+x = arch.spec[, 29]
+top.A29.genes = names(x)[scale(x) > 5]
+top.A29.genes = top.A29.genes[-grep("^MT-", top.A29.genes)]
+top.A29.genes = intersect(rownames(bulk), top.A29.genes)
+
+corrs =lapply(IDX, function(idx) {
+  cor(expr.ortho[top.A29.genes, idx], ACTIONet_summary$unified_feature_specificity[top.A29.genes, 29], method = "pearson")
+})
+
+means =lapply(IDX, function(idx) {
+  colMeans(expr.ortho[top.A29.genes, idx])
+})
+
+
+dd = data.frame(diag = unlist(lapply(IDX, function(idx) diag[idx])), study = unlist(lapply(IDX, function(idx) study[idx])), stat = unlist(means))
+dds = split(dd, dd$study)
+ggs = lapply(names(dds), function(nn) {
+  ddd = dds[[nn]]
+  ggdensity(ddd, "stat",
+     color = "diag", fill = "diag",
+     palette = c("#2166ac", "#b2182b"))  + ggtitle(nn)
+})
+
+gg = ggplotify::as.ggplot(gridExtra::arrangeGrob(grobs = ggs[2:4], nrow = 1))
+
+storeFigure(gg, name = "bulk_PEC_per_study_A29_corr_z5_genes", extension = "pdf", width = 4*3, height = 4, figures.path = figures.path)
+
+```
+
+
+
+
+```{r}
+arch.spec = ACTIONet_summary$unified_feature_specificity
+
+x = arch.spec[, 29]
+# top.top = union(hit.A29.genes, intersect(rownames(PEC.bulk), names(x)[scale(x) > 3]))
+
+top.A29.genes = names(x)[scale(x) > 5]
+top.A29.genes = top.A29.genes[-grep("^MT-", top.A29.genes)]
+top.A29.genes = intersect(rownames(MPP.bulk), top.A29.genes)
+
+
+expr = assays(MPP.bulk)[["voom"]]
+expr.ortho = orthoProject(expr, rowMeans(expr))
+
+# 
+# Z = t(scale(t(expr)))
+# # Z = orthoProject(Z, rowMeans(Z))
+# 
+# bulk.stats = colMeans(Z)
+
+
+# expr.ortho = orthoProject(expr, rowMeans(expr))
+# bulk.stats = colMeans(expr.ortho[top.A29.genes, ])
+
+bulk.stats = cor(expr.ortho[top.A29.genes, ], ACTIONet_summary$unified_feature_specificity[top.A29.genes, 29])
+
+# bulk.stats = cor(expr.ortho[top.A29.genes, ], sample(ACTIONet_summary$unified_feature_specificity[top.A29.genes, 29]))
+
+
+ll = c("CON", "SZ_CON−like", "CON_SZ−like", "SZ")
+f = interaction(MPP.bulk$Dx, bulk.stats > 0)
+f = factor(ll[as.numeric(f)], ll)
+
+Heatmap(Matrix::t(expr.ortho[top.A29.genes, ]), split = f)
+
+
+IDX2 = split(1:ncol(MPP.bulk), f)
+# names(IDX2) = c("CON", "SZ_CON−like", "CON_SZ−like", "SZ")
+
+ddd = data.frame(stat = bulk.stats, class = f, diag = MPP.bulk$Dx)
+ggdensity(ddd, "stat",
+   color = "diag", fill = "diag",
+   palette = c("#2166ac", "#b2182b"))
+
+ggdensity(ddd, "stat",
+   color = "class", fill = "class")
+
+```
+
+```{r}
+
+x = arch.spec[, 29]
+top.A29.genes.top = names(x)[order(x, decreasing = T)[1:20]]
+top.A29.genes.top = top.A29.genes.top[-grep("^MT-", top.A29.genes.top)]
+
+
+
+IDX3 = split(1:ncol(pb.sce), c3)
+XX = assays(pb.sce)[["In-PV_Basket"]]
+cs = colSums(XX)
+cs[cs == 0] = 1
+# XX = scale(XX, center = F, scale = cs)
+XX = XX[top.A29.genes.top, ]
+XX = t(scale(t(XX)))
+# XX[is.na(XX)] = 0
+# XX = orthoProject(XX, rowMeans(XX))
+Heatmap(sapply(IDX3, function(idx) rowMeans(XX[, idx])))
+
+Heatmap(sapply(IDX2, function(idx) rowMeans(expr.ortho[top.A29.genes.top, idx])))
+
+
+# mean.xx2=sapply(IDX2, function (idx) rowMeans(Z[hit.A29.genes, idx]))
+# 
+# # pdf("~/submission/figures/A29_genes/bulk_classes.pdf")
+# Heatmap(mean.xx2, rect_gp = gpar(col = "black"))
+# # dev.off()
+# 
+
+# 
+# X = as.data.frame(colData(PEC.bulk))
+# X$A29 = sample.cor
+# 
+# 
+# ggpubr::ggboxplot(X, "contributingStudy", "A29")
+
+
+
+```
+
+
+
+
+```{r}
+hits.sub.mats = lapply(names(assays(pb.sce)), function(nn) {
+  X = assays(pb.sce)[[nn]]
+  cs = colSums(X)
+  cs[cs == 0] = 1
+  Xnorm = scale(X, center = F, scale = cs)
+  subXnorm = Xnorm[hit.A29.genes, ]
+})
+
+idx.class = split(1:ncol(pb.sce), l)[-1]
+idx.class = idx.class[c("CON", "SZ_CON-like", "SZ", "CON_SZ-like")]
+
+mean.mats = lapply(hits.sub.mats, function(X) {
+  Z = t(scale(t(X)))
+  sapply(idx.class, function(idx) {rowMeans(Z[, idx])})
+})
+names(mean.mats)=names(assays(pb.sce))
+ggs = lapply(c("Ex-L45_MET", "Ex-L45_LRRK1", "In-PV_Basket", "In-SST"), function(nn) ggplotify::as.ggplot(Heatmap(mean.mats[[nn]], rect_gp = gpar(col = "black"), row_names_side = "left", name = "expression", cluster_columns = F, cluster_rows = F))+ggtitle(nn))
+
+
+gg = ggplotify::as.ggplot(gridExtra::arrangeGrob(grobs=ggs, nrow = 2, ncol = 2))
+
+storeFigure(gg, "hit_a29_genes_top-celltypes", extension = "pdf", width = 7, height = 8, figures.path = figures.path)
+
+
+mm = Reduce("+", mean.mats)
+Heatmap(mm)
+
+```
+
+```{r}
+nn =  "In-PV_Basket"
+  X = assays(pb.sce)[[nn]]
+  cs = colSums(X)
+  cs[cs == 0] = 1
+  Xnorm = scale(X, center = F, scale = cs)
+  subXnorm = Xnorm[hit.A29.genes, ]
+  Z = t(scale(t(subXnorm)))
+  
+  sapply(idx.class, function(idx) {rowMeans(Z[, idx])})
+  
+  df = reshape2::melt(Z)
+  colnames(df) = c("Gene", "Sample", "Expression")
+  df$Classification = l[df$Sample]
+  
+  df = df[df$Classification != "-", ]
+
+```
+
+
+```{r}
+require(ggstatsplot)
+ggs = lapply(rownames(Z), function(gene_name) {
+  ggbetweenstats(
+  data = df[df$Gene == gene_name, ],
+  x = Classification,
+  y = Expression,
+  xlab = "Classification",
+  ylab = "Expression",
+  plot.type = "box",
+  type = "p",
+  conf.level = 0.99,
+  title = gene_name,
+  palette = "Paired")
+})
+
+## combining the individual plots into a single plot
+gg= ggplotify::as.ggplot(combine_plots(
+  ggs,
+  plotgrid.args = list(nrow = 2),
+  annotation.args = list(
+    title = "Top A29 hit genes",
+    caption = "Expression in PV-Basket"
+  )
+))
+
+storeFigure(gg, "hit_a29_genes_top_expression", extension = "pdf", width = 17, height = 10, figures.path = figures.path)
+
+
+```
+
+```{r}
+
+df2 = cbind(df, data.frame(A29 = pb.sce$A29.signature[match(df$Sample, pb.sce$ID)], PRS =  pb.sce$PRS[match(df$Sample, pb.sce$ID)]))
+
+gg =ggbetweenstats(
+  data = df2,
+  x = Classification,
+  y = A29,
+  xlab = "Classification",
+  ylab = "Expression",
+  plot.type = "box",
+  type = "p",
+  conf.level = 0.99,
+  title = "SzHet_archetype",
+  palette = "Paired")
+
+storeFigure(gg, "A29_vs_sample_classification", extension = "pdf", width = 8, height = 6, figures.path = figures.path)
+
+gg =ggbetweenstats(
+  data = df2,
+  x = Classification,
+  y = PRS,
+  xlab = "Classification",
+  ylab = "Expression",
+  plot.type = "box",
+  type = "p",
+  conf.level = 0.99,
+  title = "PRS",
+  palette = "Paired")
+
+storeFigure(gg, "PRS_vs_sample_classification", extension = "pdf", width = 8, height = 6, figures.path = figures.path)
+
+
+```
+
+
+
+```{r}
+
+x = ACTIONet_summary$unified_feature_specificity[, 29]
+top.A29.genes = names(x)[scale(x) > 10]
+top.A29.genes = intersect(rownames(expr), top.A29.genes)
+mean.expr = colMeans(t(scale(t(expr[hit.A29.genes, ]))))
+
+PEC.bulk$mean_A29_top_genes = mean.expr
+
+
+f = interaction(PEC.bulk$diagnosis, mean.expr > 0)
+IDX2 = split(1:ncol(PEC.bulk), f)
+names(IDX2) = c("CON", "SZ_CON−like", "CON_SZ−like", "SZ")
+
+
+xx2 = t(scale(t(assays(PEC.bulk)[["normexpr"]][top5.TPS.A29.genes, ])))
+mean.xx2=sapply(IDX2, function (idx) rowMeans(xx2[, idx]))
+
+# pdf("~/submission/figures/A29_genes/bulk_classes.pdf")
+Heatmap(mean.xx2, rect_gp = gpar(col = "black"))
+# dev.off()
+
+
+# xx3 = assays(PEC.bulk)[["normexpr"]][top.A29.genes, ]
+
+# 
+# readr::write_rds("")
+
+dd = reshape2::melt(IDX2)
+dd = dd[order(dd$value), ]
+
+ddd = as.data.frame(colData(PEC.bulk))
+ddd$classification = dd$L1
+
+
+# PEC.bulk$classification = dd$L1
+
+
+readr::write_rds(PEC.bulk, "~/submission/datasets/classified_PEC_bulk_samples.rds")
+readr::write_tsv(ddd, "~/submission/tables/classified_PEC_bulk_samples_meta_data.tsv")
+readr::write_rds(PEC.bulk, "~/submission/tables/rds/classified_PEC_bulk_samples_meta_data.rds")
+
+
+
+```
+
+
+```{r}
+ace.summary <- readr::read_rds("~/submission/datasets/ACTIONet_summary.rds")
+
+celltype.en = presto::wilcoxauc(as.matrix(Matrix::t(ace.summary$H_unified)), ace$Celltype)
+xx = do.call(cbind, split(2*(celltype.en$auc-0.5), celltype.en$group))
+rownames(xx) = unique(celltype.en$feature)
+xx = Matrix::t(xx)
+ht = Heatmap(xx, cluster_columns = F, show_row_dend = F, rect_gp = gpar(col = "black"), name=names(assays(pb.sce2))[[k]], row_names_side = "left")
+  
+  
+```
+
+
+```{r}
+ace <- readr::read_rds("~/submission/datasets/combinedCells_ACTIONet.rds")
+arch.spec = readr::read_rds("~/submission/datasets/archetype_gene_specificity.rds")
+
+
+```
+
+```{r}
+celltype.spec = readr::read_rds("~/submission/datasets/celltype_gene_specificity.rds")
+
+
+x = celltype.spec[, "In-PV_Basket"]
+
+names(x)[order(x, decreasing = T)[1:10]]
+
+```
+
+
+```{r}
+IDX3 = split(1:ncol(ace), ace$Celltype)
+
+S = counts(ace)
+
+captures = lapply(IDX3, function(idx) {
+  subS = S[, idx]
+  subS@x = rep(1, length(subS@x))
+  capture.rate = rowMeans(subS)
+  
+})
+captures.mat = do.call(cbind, captures)
+readr::write_rds(captures.mat, "~/submission/datasets/gene_capture_rate_per_celltype.rds")
+
+
+
+
+```
+
+
+
+```{r}
+stats = annotate.archetypes.using.labels(
+  Matrix::t(ACTIONet_summary$H_unified), ACTIONet_summary$metadata$Cohort)
+
+Heatmap(stats$Enrichment)
+
+
+```
+
