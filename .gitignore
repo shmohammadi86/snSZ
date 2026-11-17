@@ -1,0 +1,29 @@
+# Data and outputs (never committed; see docs/data.md)
+submission/
+results/
+input/
+data/
+docs/rendered/
+*.rds
+*.RDS
+*.h5ad
+*.h5
+*.loom
+*.xlsx
+
+# R and RStudio
+.Rhistory
+.RData
+.Rproj.user/
+*_cache/
+*_files/
+*.html
+
+# Editor and agent tooling
+.DS_Store
+.vscode/
+.idea/
+CLAUDE.md
+AGENTS.md
+.claude/
+.cursor/
