@@ -4,10 +4,12 @@
 #    (Purpose, Inputs, Outputs, Paper item, Run notes).
 # 2. The R code of every notebook (extracted with knitr::purl) and every file
 #    under R/, config/ and scripts/ parses.
-# 3. No tracked file contains an absolute home path.
+# 3. No tracked file contains an absolute or machine-specific path or setwd().
+#    Run from anywhere inside the repository: the script moves to the root.
 #
 # Exits with status 1 on the first class of failure, after reporting all issues.
 
+setwd(here::here())  # the one allowed setwd: move to the repository root
 failures <- character()
 fail <- function(msg) failures <<- c(failures, msg)
 
@@ -33,7 +35,9 @@ for (f in r_files) {
 tracked <- system2("git", c("ls-files"), stdout = TRUE)
 for (f in setdiff(tracked[file.exists(tracked)], "scripts/check_repo.R")) {
   txt <- readLines(f, warn = FALSE)
-  if (any(grepl("(~/|/home/|/Users/)", txt))) fail(sprintf("%s: contains an absolute home path", f))
+  bad_path <- grepl("(~/|/home/|/Users/|/mnt/|/broad/|/sc/arion|[A-Za-z]:[\\\\/][A-Za-z])", txt)
+  bad_setwd <- grepl("setwd(", txt, fixed = TRUE)
+  if (any(bad_path | bad_setwd)) fail(sprintf("%s: contains an absolute or machine-specific path, or setwd()", f))
 }
 
 if (length(failures)) {

@@ -5,7 +5,8 @@
 #   1. Storing and loading results (datasets, tables, figures).
 #   2. Sample quality control (outlier samples by excitatory-neuron fraction).
 #   3. Individual-level transcriptional deviation (TD) scores.
-#   4. Annotation of ACTIONet archetypes and transcription factor enrichment.
+#   4. Annotation of ACTIONet archetypes (R/actionet_adapted.R, GPL-2.0) and
+#      transcription factor enrichment.
 #
 # Synapse access is optional: functions that can fetch from Synapse do so only
 # when the synapser package is installed and the user is logged in.
@@ -106,7 +107,7 @@ loadDataset <- function(name, dataset.path = get0("dataset.path", ifnotfound = "
 #' @param extension One of `csv`, `tsv`, `tab`, `txt`, `rds`, `RDS`.
 #' @param input.path Local input directory.
 #' @return A tibble for delimited files, or the stored object for RDS files.
-loadInputDataset <- function(name, extension, input.path = get0("input.path", ifnotfound = "input")) {
+loadInputDataset <- function(name, extension, input.path = get0("input.path", ifnotfound = here::here("data", "input"))) {
   file_name <- paste(name, extension, sep = ".")
   file_path <- file.path(input.path, file_name)
   if (!file.exists(file_path)) {
@@ -192,55 +193,9 @@ TD.scores <- function(DE.stats, pb.sce) {
 # 4. Archetype annotation and transcription factor enrichment
 # ---------------------------------------------------------------------------
 
-#' Annotate ACTIONet archetypes (cell states) with discrete labels
-#'
-#' Scores each archetype for each label by comparing the archetype footprint of
-#' cells carrying the label with all other cells, then assigns each archetype
-#' its best-scoring label.
-#'
-#' @param ace ACTIONetExperiment, or a cell by archetype matrix.
-#' @param labels Cell labels (vector, or name of a column of `colData(ace)`).
-#' @param archetype.slot Name of the archetype footprint in `colMaps(ace)`.
-#' @param algorithm `"ttest"` (Welch t-statistic) or `"wilcox"` (AUC minus 0.5,
-#'   with -log10 P values in `logPvals`).
-#' @return List with `Label` (best label per archetype), `Confidence` (best
-#'   score), `Enrichment` (archetype by label scores) and, for `"wilcox"`,
-#'   `logPvals`.
-annotate.archetypes.using.labels <- function(ace, labels, archetype.slot = "H_unified", algorithm = "ttest") {
-  Labels <- ACTIONet:::.preprocess_annotation_labels(labels, ace)
-  if (is.matrix(ace) | ACTIONetExperiment:::is.sparseMatrix(ace)) {
-    profile <- as.matrix(ace)
-  } else {
-    profile <- Matrix::t(ACTIONetExperiment::colMaps(ace)[[archetype.slot]])
-  }
-  Annot <- names(Labels)[match(sort(unique(Labels)), Labels)]
-  if (algorithm == "wilcox") {
-    wilcox.out <- presto::wilcoxauc(profile, Annot[Labels])
-    Enrichment <- do.call(cbind, split(wilcox.out$auc - 0.5, wilcox.out$group))
-    logPvals <- -log10(do.call(cbind, split(wilcox.out$pval, wilcox.out$group)))
-  } else {
-    Enrichment <- sapply(Annot, function(label) {
-      mask <- names(Labels) == label
-      N.class <- sum(mask)
-      N.null <- sum(!mask)
-      if ((N.class < 3) | (N.null < 3)) {
-        return(rep(0, nrow(profile)))
-      }
-      class.profile <- profile[, mask]
-      null.profile <- profile[, !mask]
-      delta.mean <- Matrix::rowMeans(class.profile) - Matrix::rowMeans(null.profile)
-      delta.mean / sqrt(apply(class.profile, 1, var) / N.class + apply(null.profile, 1, var) / N.null)
-    })
-  }
-  Enrichment[is.na(Enrichment)] <- 0
-  archetypeLabels <- Annot[apply(Enrichment, 1, which.max)]
-  rownames(Enrichment) <- paste("A", seq_len(nrow(Enrichment)), "-", archetypeLabels, sep = "")
-  out <- list(Label = archetypeLabels, Confidence = apply(Enrichment, 1, max), Enrichment = Enrichment)
-  if (algorithm == "wilcox") {
-    out$logPvals <- logPvals
-  }
-  out
-}
+# annotate.archetypes.using.labels() is adapted from ACTIONet (GPL-2.0) and
+# lives in R/actionet_adapted.R under that license; it is sourced here.
+source(here::here("R", "actionet_adapted.R"))
 
 #' Query the ChEA3 transcription factor enrichment service
 #'

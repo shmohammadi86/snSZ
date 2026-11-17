@@ -43,15 +43,39 @@ From the published paper:
 ## Reproducing the analysis
 
 1. Obtain the data (controlled access; see [`docs/data.md`](docs/data.md)). No data is stored in this repository.
-2. Point `config/paths.R` at your copy by setting `SNSZ_ROOT` (or the individual `SNSZ_*` variables).
+2. Put the data under `data/` in the repository (gitignored), or set `SNSZ_DATA_DIR` to where it lives (see Configuring data paths).
 3. Install R 4.x with ACTIONet, muscat, limma, metafor, WGCNA, ComplexHeatmap, ggpubr, EnhancedVolcano, gprofiler2, rrvgo, ppcor, openxlsx, readr and here. Each notebook lists its packages in its setup chunk.
 4. Run the notebooks in folder order. Chunks are not evaluated by default (`eval = FALSE`), so `make render` produces readable HTML without the data; set `eval = TRUE` in a notebook's setup chunk to run it.
 
 `make check` verifies notebook headers, parses all R code, and scans for absolute paths.
 
+## Configuring data paths
+
+No path in this repository is absolute or tied to one machine. Every notebook starts with
+
+```r
+source(here::here("config", "paths.R"))
+source(here::here("R", "functions.R"))
+```
+
+`here::here()` finds the repository root at run time (from the `.here` marker file, the `.git` folder or an `.Rproj` file), whatever the working directory, so notebooks run the same from RStudio, `rmarkdown::render()` or the command line. `config/paths.R` then builds every location from environment variables with repository-relative defaults:
+
+| Variable | Default | Holds |
+|---|---|---|
+| `SNSZ_DATA_DIR` (alias `SNSZ_ROOT`) | `<repo>/data` | Root of the analysis workspace |
+| `SNSZ_DATASETS` | `<root>/datasets` | Intermediate R objects passed between notebooks |
+| `SNSZ_TABLES` | `<root>/tables` | Tables (RDS copies in `tables/rds/`) |
+| `SNSZ_FIGURES` | `<root>/figures` | Figures |
+| `SNSZ_INPUT` | `<root>/input` | External inputs (marker sets, gene sets, GWAS loci, bulk expression) |
+
+Set them in your user-level `.Renviron` file (in your home directory), for example `SNSZ_DATA_DIR=/path/to/snSZ-data`; relative values resolve against the repository root. Use `repo_path(...)` for any new path inside the repository. `make check` fails on absolute paths and on calls that change the working directory.
+
 ## License
 
-Code is released under the MIT License and documentation under CC BY 4.0 (see `LICENSE`).
+- **Code:** MIT License (`LICENSE`), the most permissive common license, except `R/actionet_adapted.R`.
+- **`R/actionet_adapted.R`:** adapted from ACTIONet and kept under ACTIONet's license, GPL-2.0-or-later, as stated in its header.
+- **Documentation, notebook text and figures:** Creative Commons Attribution 4.0 (`LICENSE-docs`).
+- **Third-party code and the R packages the notebooks call:** listed with their licenses in `NOTICE`. Calling a package does not change the license of this repository's code.
 
 ## Contact
 

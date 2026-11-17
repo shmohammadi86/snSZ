@@ -1,0 +1,35 @@
+snSZ
+Copyright (c) 2021-2026 Shahin Mohammadi
+
+Code in this repository is licensed under the MIT License (LICENSE), and
+documentation, notebook text and figures under CC BY 4.0 (LICENSE-docs),
+with the exception below.
+
+Third-party code included in this repository
+---------------------------------------------
+R/actionet_adapted.R
+    annotate.archetypes.using.labels(), adapted from ACTIONet
+    (https://github.com/shmohammadi86/ACTIONet).
+    License: GNU General Public License v2.0 or later (GPL-2.0-or-later),
+    the license of ACTIONet. This file is not covered by the MIT License.
+
+Software used but not included
+------------------------------
+The notebooks call the following R packages, which are installed separately
+and keep their own licenses. Using them does not change the license of the
+code in this repository.
+
+    Verified from installed DESCRIPTION files:
+    ACTIONet, ACTIONetExperiment (GPL >= 2); muscat (GPL-3); limma (GPL >= 2);
+    metafor (GPL >= 2); Matrix (GPL >= 2); fgsea (MIT); SummarizedExperiment
+    (Artistic-2.0); ComplexHeatmap (MIT); ggplot2 (MIT); ggrepel (GPL-3);
+    cowplot (GPL-2); circlize (MIT); data.table (MPL-2.0); httr (MIT);
+    jsonlite (MIT); here (MIT); knitr (GPL); openxlsx (MIT); readr (MIT).
+
+    As published by their authors (not installed on the release machine):
+    WGCNA (GPL >= 2); presto (GPL-3); gprofiler2 (GPL >= 2);
+    synapser (Apache-2.0).
+
+    Check the installed version of each package for its authoritative terms.
+
+Web services queried at run time: ChEA3 (Ma'ayan Lab) and g:Profiler.

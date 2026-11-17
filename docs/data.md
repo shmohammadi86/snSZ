@@ -4,11 +4,11 @@ No data is stored in this repository. Source data and processed datasets are ava
 
 ## Directory layout
 
-`config/paths.R` reads these environment variables; defaults sit under `<repo>/submission/`.
+`config/paths.R` reads these environment variables; relative values and defaults resolve against the repository root through `here::here()`, and defaults sit under `<repo>/data/` (gitignored).
 
 | Variable | Default | Holds |
 |---|---|---|
-| `SNSZ_ROOT` | `submission` | Root of the workspace |
+| `SNSZ_DATA_DIR` (alias `SNSZ_ROOT`) | `data` | Root of the workspace |
 | `SNSZ_DATASETS` | `<root>/datasets` | Intermediate R objects (`.rds`) passed between notebooks |
 | `SNSZ_TABLES` | `<root>/tables` | Excel and TSV tables; RDS copies in `tables/rds/` |
 | `SNSZ_FIGURES` | `<root>/figures` | PNG and PDF figures |
