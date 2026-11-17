@@ -458,7 +458,6 @@ z = scale(tbl)
 
 Heatmap(scale(tbl))
 
-sort(z[, "REDACTED"])
 ```
 
 ```{r}
