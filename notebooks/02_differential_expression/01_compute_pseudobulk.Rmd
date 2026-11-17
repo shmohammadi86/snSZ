@@ -1,64 +1,61 @@
 ---
-title: "Perform DE analysis"
-subtitle: "Compute pseudobulk (PB) profiles"
+title: "Pseudobulk profiles"
+subtitle: "Mean log-count pseudobulk per cell type and individual"
 author: "Shahin Mohammadi"
-date: "Run on `r Sys.time()`"
-documentclass: article
+date: "Rendered on `r Sys.Date()`"
 output:
   html_document:
     toc: true
     toc_float: true
 ---
 
+**Purpose.** Aggregate single-nucleus profiles into mean log-count pseudobulk profiles per cell type and individual with muscat, record each gene's capture rate, and remove outlier samples by excitatory-neuron fraction.
+
+**Inputs.** `combinedCells_ACTIONet`, `ACTIONet_summary` (datasets/), `individual_metadata` (tables/rds).
+
+**Outputs.** `pseudobulk_mean_logcounts` and `pseudobulk_mean_logcounts_filtered` (datasets/); capture-rate density plot (figures/).
+
+**Paper item.** Input to the differential expression analysis (Methods).
+
+**Run notes.** Loads the full ACTIONet object; memory heavy. Paths come from `config/paths.R` (see `docs/data.md`). Chunks are not evaluated by default; set `eval = TRUE` in the setup chunk to run.
+
 ```{r setup, include=FALSE}
+# Shared configuration: data paths and helper functions.
+source(here::here("config", "paths.R"))
+source(here::here("R", "functions.R"))
+
 suppressPackageStartupMessages({
-library(ACTIONet)
-library(data.table)
-library(ggplot2)
-library(ggrepel)
-library(cowplot)
-library(corrplot)
-library(muscat)
-library(synapser)
-library(synExtra)
-synLogin(rememberMe = TRUE)
-source("functions.R")
+  library(ACTIONet)
+  library(data.table)
+  library(ggplot2)
+  library(ggrepel)
+  library(cowplot)
+  library(corrplot)
+  library(muscat)
 })
 
 knitr::opts_chunk$set(
-	eval = FALSE,
-	error = FALSE,
-	message = FALSE,
-	warning = FALSE,
-	cache = TRUE,
-	dev = c("png", "pdf"),
-	include = FALSE,
-	tidy = FALSE
+  eval = FALSE,
+  echo = TRUE,
+  error = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  cache = TRUE,
+  dev = c("png", "pdf"),
+  tidy = FALSE
 )
-
-
 ```
 
-
-
 ```{r}
-dataset.path = "~/submission/datasets/"
-figures.path = "~/submission/figures"
-tables.path = "~/submission/tables"
-input.path = "~/submission/input"
-
-
 individual_metadata = loadDataset("individual_metadata", dataset.path = file.path(tables.path, "rds"))
 
 ace = loadDataset("combinedCells_ACTIONet", dataset.path = dataset.path)
-
+ACTIONet_summary = loadDataset("ACTIONet_summary", dataset.path = dataset.path)
 ```
-
 
 # Convert it to SCE object
 ```{r}
 sce = as(ace, "SingleCellExperiment")
-
 ```
 
 # Use muscat to compute PB profiles
@@ -80,7 +77,6 @@ system.time( {pb.sce <- aggregateData(sce,
     by = c("cluster_id", "sample_id"))} )
 
 colData(pb.sce) = cbind(colData(pb.sce), individual_metadata[colnames(pb.sce), ])
-
 ```
 
 # Compute and add capture rate of genes (average number of cells that captured a gene)
@@ -88,41 +84,25 @@ colData(pb.sce) = cbind(colData(pb.sce), individual_metadata[colnames(pb.sce), ]
 capture.rate = fastRowMeans(counts(ace) > 0)
 
 require(ggpubr)
-gg = ggdensity(data.frame(capture.rate), x = "capture.rate", fill = "lightgray")+ geom_vline(xintercept = 0.05, linetype = "dashed") 
+gg = ggdensity(data.frame(capture.rate), x = "capture.rate", fill = "lightgray")+ geom_vline(xintercept = 0.05, linetype = "dashed")
 storeFigure(gg, "capture_rate_density", figures.path = figures.path, extension = "pdf", width = 6, height = 4)
 
 rowData(pb.sce)$capture.rate = capture.rate
-
 ```
 
 # Store pseudobulk profiles
 ```{r}
-
 storeDataset(pb.sce, name = "pseudobulk_mean_logcounts", dataset.path = dataset.path)
-
 ```
 
-
 # Prefilter outlier samples using % of excitatory neurons
-REDACTED is removed due to having > 80% ExNeu, and samples REDACTED, REDACTED, REDACTED, REDACTED are removed due to having less than 10% ExNeu
+Samples whose excitatory-neuron fraction (excluding Ex-NRGN) falls outside 10% to 80% are removed: one with more than 80% and four with less than 10%, all from individuals with schizophrenia.
 ```{r}
-ncells = apply(table(ACTIONet_summary$metadata$Labels, ACTIONet_summary$metadata$Individual), 2, as.numeric)
-rownames(ncells) = levels(ACTIONet_summary$metadata$Labels)
-
-cs = Matrix::colSums(ncells)
-ncells.freq = 100*scale(ncells, center = F, scale = cs)
-Ex.perc = (fast_column_sums(ncells.freq[grepl("^Ex", rownames(ncells.freq)) & !grepl("^Ex-NRGN", rownames(ncells.freq)), ]))
-
-mask = (Ex.perc >= 10) & (Ex.perc <= 80) 
-pb.sce.filtered = pb.sce[, mask]
-
+filtered.samples = identify_outlier_samples(ACTIONet_summary$metadata)
+pb.sce.filtered = pb.sce[, !(colnames(pb.sce) %in% filtered.samples)]
 ```
 
 # Store filtered pseudobulk profiles
 ```{r}
-
 storeDataset(pb.sce.filtered, name = "pseudobulk_mean_logcounts_filtered", dataset.path = dataset.path)
-
 ```
-
-

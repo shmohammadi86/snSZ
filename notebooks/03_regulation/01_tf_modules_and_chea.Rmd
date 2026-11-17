@@ -1,57 +1,52 @@
 ---
-title: "Analyze DE genes"
-subtitle: "TF modules and ChEA anerichment"
+title: "Transcription factor modules"
+subtitle: "Consensus TF co-expression modules, ChEA3 enrichment, and CUT&Tag support"
 author: "Shahin Mohammadi"
-date: "Run on `r Sys.time()`"
-documentclass: article
+date: "Rendered on `r Sys.Date()`"
 output:
   html_document:
     toc: true
     toc_float: true
 ---
 
+**Purpose.** Build consensus transcription factor co-expression modules across cell types with WGCNA, score DE gene sets for TF enrichment with ChEA3, relate modules to PGC3 schizophrenia loci, and compare predicted targets with CUT&Tag-linked genes.
+
+**Inputs.** `ACTIONet_summary`, `pseudobulk_mean_logcounts`, `Cohort_specific_DE_results_final`, `DE_genes_pseudobulk_final`, `celltype_gene_specificity`, `CUTTag_linked_genes` (datasets/); `celltype_stats` (tables/rds); `ChEA_TFs.txt`, `PGC3_SZ_significant_loci` (input/).
+
+**Outputs.** `WGCNA_consensusTOM`, `TF_modules`, `ChEA_DE_TF_enrichment_min50genes_final` (datasets/); TF module and ChEA score tables (tables/); module heatmaps and bar plots (figures/).
+
+**Paper item.** Transcription factor module and ChEA enrichment figures and tables.
+
+**Run notes.** ChEA3 is queried through its REST API (network access needed); the consensus TOM is cached after the first run. Paths come from `config/paths.R` (see `docs/data.md`). Chunks are not evaluated by default; set `eval = TRUE` in the setup chunk to run.
+
 ```{r setup, include=FALSE}
+# Shared configuration: data paths and helper functions.
+source(here::here("config", "paths.R"))
+source(here::here("R", "functions.R"))
+
 suppressPackageStartupMessages({
-library(ACTIONet)
-library(data.table)
-library(ggplot2)
-library(ggrepel)
-library(cowplot)
-library(corrplot)
-library(muscat)
-library(synapser)
-library(synExtra)
-synLogin(rememberMe = TRUE)
-source("functions.R")
+  library(ACTIONet)
+  library(data.table)
+  library(ggplot2)
+  library(ggrepel)
+  library(cowplot)
+  library(corrplot)
+  library(muscat)
 })
 
 knitr::opts_chunk$set(
-	eval = FALSE,
-	error = FALSE,
-	message = FALSE,
-	warning = FALSE,
-	cache = TRUE,
-	dev = c("png", "pdf"),
-	include = FALSE,
-	tidy = FALSE
+  eval = FALSE,
+  echo = TRUE,
+  error = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  cache = TRUE,
+  dev = c("png", "pdf"),
+  tidy = FALSE
 )
-
-
 ```
-
-
-```{r}
-dataset.path = "~/submission/datasets/"
-figures.path = "~/submission/figures"
-tables.path = "~/submission/tables"
-input.path = "~/submission/input"
-
-```
-
-
 
 # Setup environment
-
 
 ```{r}
 ACTIONet_summary = loadDataset("ACTIONet_summary", dataset.path = dataset.path)
@@ -79,15 +74,8 @@ celltypes.df = loadDataset("celltype_stats", dataset.path = file.path(tables.pat
 celltype_colors = celltypes.df$color
 names(celltype_colors) = celltypes.df$celltype
 
-
 celltype.gene.spec = loadDataset("celltype_gene_specificity", dataset.path = dataset.path)
-
-# SZ.gs = loadDataset("SCZ_associated_genesets_extended", dataset.path = input.path)
-# SynGO = readr::read_rds("~/BD/results/datasets/SynGO.rds")
-
-
 ```
-
 
 # Construct TF modules
 ```{r}
@@ -95,7 +83,6 @@ TFs = readr::read_table(file.path(input.path, "ChEA_TFs.txt"))[[1]]
 cts = names(assays(pb.sce))
 
 subTFs = intersect(TFs, rownames(pb.sce))
-
 ```
 
 ## Compute TF-TF expression correlation within each cell type
@@ -111,7 +98,6 @@ PB.assays.norm = lapply(cts, function(nn) {
   return(E[subTFs, ])
 })
 names(PB.assays.norm) = cts
-
 ```
 
 # Convert to WGCNA compatible format
@@ -121,10 +107,7 @@ multiExpr = vector(mode = "list", length = nSets)
 for(i in 1:length(cts)) {
   multiExpr[[i]] = list(data = as.data.frame(t(PB.assays.norm[[i]])))
 }
-
 ```
-
-
 
 # Run WGCNA
 ## Calculation of network adjacencies
@@ -137,11 +120,9 @@ adjacencies = array(0, dim = c(nSets, nGenes, nGenes));
 # Calculate adjacencies in each individual data set
 for (set in 1:nSets) {
   adj = abs(cor(multiExpr[[set]]$data, use = "p"))^6
-  # adj = ((1+cor(multiExpr[[set]]$data, use = "p"))/2)^12
   adj[is.na(adj)] = 0
   adjacencies[set, , ] = adj
 }
-
 ```
 
 ##  Calculation of Topological Overlap
@@ -151,13 +132,10 @@ TOM = array(0, dim = c(nSets, nGenes, nGenes));
 # Calculate TOMs in each individual data set
 for (set in 1:nSets)
   TOM[set, , ] = TOMsimilarity(adjacencies[set, , ]);
-
-
 ```
 
 ##  Calculation of consensus Topological Overlap
 ```{r}
-# selected.cts = names(DE.new$Up.genes)
 scaleP = 0.95
 selected.cts = names(DE.new$Up.genes)
 indices = match(selected.cts, cts)
@@ -173,30 +151,24 @@ consensusTOM = TOM[indices[[1]], ,]
 for(i in 2:length(indices)) {
   curTOM = TOM[indices[[i]], ,]
   scaledTOM = curTOM^kappa[i]
-  # consensusTOM = consensusTOM * (scaledTOM)
   consensusTOM = consensusTOM + (scaledTOM)
-  # consensusTOM = pmin(consensusTOM, scaledTOM)
-  
+
 }
 consensusTOM = consensusTOM *(1/length(indices))
 
 rownames(consensusTOM) = colnames(consensusTOM) = subTFs
-  
 ```
 
 ## Store Consensus TOM
 ```{r}
 storeDataset(consensusTOM, name = "WGCNA_consensusTOM", dataset.path = dataset.path)
-
 ```
 
 # Load WGCNA analysis results
 ```{r}
 consensusTOM = loadDataset(name = "WGCNA_consensusTOM", dataset.path = dataset.path)
 selected.TFs = rownames(consensusTOM)
-
 ```
-
 
 ```{r}
 set.seed(0)
@@ -214,10 +186,7 @@ TF.mods = split(selected.TFs, ff)
 TF.mods = TF.mods[names(TF.mods) != "grey"]
 
 sorted.mods = names(TF.mods)[order(sapply(TF.mods, length), decreasing = T)]
-
-
 ```
-
 
 ## Load significant variants and mapped genes
 ```{r}
@@ -225,22 +194,17 @@ PGC3.loci = loadInputDataset("PGC3_SZ_significant_loci", "tsv", input.path = inp
 
 associated.genes = PGC3.loci$`ENSEMBL genes  all (clear names)`
 
-
 PGC3.all.genes.raw = sort(unique(unlist(sapply(PGC3.loci$`ENSEMBL genes  all (clear names)`, function(str) {
   if(str == "-") {
     return("-")
   }
   gs = str_split(str, ",")[[1]]
-  
+
   return(gs)
 }))))
 
 PGC3.all.genes = intersect(PGC3.all.genes.raw, rownames(pb.sce))
-
-
-
 ```
-
 
 ```{r}
 TF.df = data.frame(TFs = subTFs, modules = unmergedLabels, celltype_colors = unmergedColors, GWAS.linked.PGC3 = as.numeric(subTFs %in% PGC3.all.genes))
@@ -253,24 +217,17 @@ TF.df = TF.df[order(TF.df$celltype_colors, decreasing = F), ]
 TF.df$modules = paste("M", match(TF.df$modules, unique(TF.df$modules)), sep = "")
 
 TF.df = droplevels(TF.df)
-
 ```
-
 
 ```{r}
 storeDataset(TF.df, "TF_modules", dataset.path = dataset.path)
 storeTable(list(WGCNA = TF.df), "TF_modules", tables.path = tables.path)
-
 ```
-
-
 
 # Load TF modules
 ```{r}
 TF.df = loadDataset("TF_modules", dataset.path = dataset.path)
-
 ```
-
 
 ```{r}
 ww = consensusTOM[TF.df$TFs, TF.df$TFs]
@@ -281,7 +238,6 @@ MPal = names(TF.mods)
 names(MPal) = MPal
 ha_row = rowAnnotation(Module = factor(unlist(lapply(1:length(TF.mods), function(i) rep(names(TF.mods)[[i]], length(TF.mods[[i]])))), names(TF.mods)), col = list(Module = MPal))
 
-
 rownames(ww) = colnames(ww) = c()
 
 Pal = as.character(pals::brewer.ylorrd(11))
@@ -289,9 +245,7 @@ Pal = as.character(pals::brewer.ylorrd(11))
 ht = Heatmap(ww, row_names_side = "left", name = "ConsensusTOM", col = Pal, column_title = "TF-TF expression correlation", column_title_gp = gpar(fontsize = 21), cluster_rows = F, cluster_columns = F, left_annotation = ha_row)
 
 storeFigure(ht, "TF_modules_unlabeled_colored", extension = "pdf", width = 7, height = 7, figures.path = figures.path)
-
 ```
-
 
 # #################################
 # #### ChEA analysis from Here!!
@@ -303,20 +257,18 @@ storeFigure(ht, "TF_modules_unlabeled_colored", extension = "pdf", width = 7, he
     if(length(genes) > 50)
       queryChEA3(genes)
   })
-  
+
   ChEA3.Down = lapply(Down.genes, function(genes) {
     if(length(genes) > 50)
       queryChEA3(genes)
   })
-  
+
   names(ChEA3.Up) = names(ChEA3.Down) = names(Up.genes)
-  
+
   ChEA.analysis = c(ChEA3.Up, ChEA3.Down)
   names(ChEA.analysis) = c(paste("Up", names(Up.genes), sep = "_"), paste("Down", names(Down.genes), sep = "_"))
 
-
   storeDataset(ChEA.analysis, "ChEA_DE_TF_enrichment_min50genes_final", dataset.path = dataset.path)
-
 ```
 
 ```{r}
@@ -324,9 +276,7 @@ ChEA.analysis = loadDataset("ChEA_DE_TF_enrichment_min50genes_final", dataset.pa
 ChEA3.Up = ChEA.analysis[1:length(Up.genes)]
 ChEA3.Down = ChEA.analysis[(1+length(Up.genes)):length(ChEA.analysis)]
 names(ChEA3.Up) = names(ChEA3.Down) = names(Up.genes)
-
 ```
-
 
 # Export TF ChEA scores as excel tables
 ```{r}
@@ -335,14 +285,14 @@ Up.DFs = lapply(1:length(ChEA3.Up), function(i) {
   if(is.null(res)) {
       return(NULL)
   }
-  
+
   X = res$`Integrated--topRank`
-  
+
   X$Score = -log10(as.numeric(X$Score))
   X$Rank = as.numeric(X$Rank)
   X = X[, -c(1, 2, 5)]
   X$inPGC3 = as.numeric(X$TF %in% PGC3.all.genes)
-  
+
   return(X)
 })
 names(Up.DFs) = names(ChEA3.Up)
@@ -350,34 +300,30 @@ Up.DFs = Up.DFs[!sapply(Up.DFs, is.null)]
 
 storeTable(Up.DFs, name = "TFs_ChEA_scores_Up_final", tables.path = tables.path)
 
-
 Down.DFs = lapply(1:length(ChEA3.Down), function(i) {
   res = ChEA3.Down[[i]]
   if(is.null(res)) {
       return(NULL)
   }
-  
+
   X = res$`Integrated--topRank`
-  
+
   X$Score = -log10(as.numeric(X$Score))
   X$Rank = as.numeric(X$Rank)
   X = X[, -c(1, 2, 5)]
-  
+
   X$inPGC3 = as.numeric(X$TF %in% PGC3.all.genes)
-  
+
   return(X)
 })
 names(Down.DFs) = names(ChEA3.Down)
 Down.DFs = Down.DFs[!sapply(Down.DFs, is.null)]
 storeTable(Down.DFs, name = "TFs_ChEA_scores_Down_final", tables.path = tables.path)
-
 ```
-
 
 # Construct ChEA score matrix for up- and down-regulated genes
 ```{r}
 TFs = sort(unique(ChEA.analysis[[1]]$`Integrated--meanRank`$TF))
-
 
 TF.up = matrix(0, nrow = length(TFs), length(ChEA3.Up))
 rownames(TF.up) = TFs
@@ -387,9 +333,9 @@ for(i in 1:length(ChEA3.Up)) {
   if(is.null(res)) {
       next
   }
-  
+
   X = res$`Integrated--topRank`
-  
+
   TF.up[match(X$TF, TFs), i] = -log10(as.numeric(X$Score))
 }
 
@@ -401,39 +347,29 @@ for(i in 1:length(ChEA3.Down)) {
   if(is.null(res)) {
       next
   }
-  
+
   X = res$`Integrated--topRank`
-  
+
   TF.down[match(X$TF, TFs), i] = -log10(as.numeric(X$Score))
 }
 
 TF.up = TF.up[, fast_column_sums(TF.up) != 0]
 TF.down = TF.down[, fast_column_sums(TF.down) != 0]
-
-
 ```
-
 
 ```{r}
 TF.df = loadDataset("TF_modules", dataset.path = dataset.path)
-
 ```
 
 ```{r}
-# TF.mean.scores = apply(cbind(TF.down[, grep("Ex|In", colnames(TF.down))], TF.up[, grep("Ex|In", colnames(TF.up))]), 1, mean)
-# names(TF.mean.scores) = rownames(TF.down)
-
 TF.aggr.scores = apply(cbind(TF.down, TF.up), 1, mean)
 names(TF.aggr.scores) = rownames(TF.down)
 TF.df$ChEA.aggregate.association = TF.aggr.scores[TF.df$TFs]
 
 x = sapply(split(TF.df$ChEA.aggregate.association, TF.df$celltype_colors), mean)
-# TF.df$celltype_colors = factor(as.character(TF.df$celltype_colors), names(x)[order(x, decreasing = T)])
 
 TF.mods = split(TF.df$TFs, TF.df$celltype_colors)
-
 ```
-
 
 # Compute aggregate ChEA score per TF module
 ```{r}
@@ -446,11 +382,8 @@ df.combined = rbind(df.up, df.down)
 df.combined$celltype_colors = factor(df.combined$celltype_colors, levels(TF.df$celltype_colors))
 
 gg = ggbarplot(df.combined, "celltype_colors", "value", fill = "Direction", palette = c("#3288bd", "#d53e4f"), add = "mean_se") + ylab("ChEA Score (combined)") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, color = levels(TF.df$celltype_colors))) + xlab("TF Modules (sorted)")
-  
+
 storeFigure(gg, "ChEA_aggr_scores_per_module_barplot_final_sizes", extension = "pdf", width = 6, height = 4, figures.path = figures.path)
-
-
-
 ```
 
 ## Load significant variants and mapped genes
@@ -459,20 +392,16 @@ PGC3.loci = readr::read_tsv(file.path(input.path, "PGC3_SZ_significant_loci.csv"
 
 associated.genes = PGC3.loci$`ENSEMBL genes  all (clear names)`
 
-
 PGC3.all.genes.raw = sort(unique(unlist(sapply(PGC3.loci$`ENSEMBL genes  all (clear names)`, function(str) {
   if(str == "-") {
     return("-")
   }
   gs = str_split(str, ",")[[1]]
-  
+
   return(gs)
 }))))
 
 PGC3.all.genes = intersect(PGC3.all.genes.raw, rownames(pb.sce))
-
-
-
 ```
 
 ## ChEA scores of the top-ranked (purple module)
@@ -482,28 +411,17 @@ mask = purpleMod %in% PGC3.all.genes
 TF.celltype_colors = rep("black", length(purpleMod))
 TF.celltype_colors[mask] = "red"
 
-
 X.U = TF.up[purpleMod,]
 redCol_fun = circlize::colorRamp2(c(0, exp(quantile(log(X.U), seq(0.25, 0.95, length.out = 12)))), c("#ffffff", pals::brewer.reds(12)))
 
 X.D = TF.down[purpleMod,]
 blueCol_fun = circlize::colorRamp2(c(0, exp(quantile(log(X.D), seq(0.25, 0.95, length.out = 12)))), c("#ffffff", pals::brewer.blues(12)))
 
-# row.names(X.U) = rownames(X.D) = annots
-# CC = (cor(t(X.U)) + cor(t(X.D))) / 2
-# CC[is.na(CC)] = 0
-# perm = get_order(seriate)
-
 ht = Heatmap(X.U, rect_gp = gpar(col = "black"), name = "Up", column_title = "Up", cluster_rows = F, cluster_columns = F, col = redCol_fun, row_names_side = "left",  column_names_gp = gpar(fontsize = 14, fontface="bold", col = celltype_colors[colnames(X.U)]), row_names_gp = gpar(fontsize = 14, fontface="bold", col = TF.celltype_colors), column_title_gp = gpar(fontsize = 18, fontface="bold"), row_title_gp = gpar(fontsize = 18, fontface="bold"), row_names_max_width = unit(150, "cm"), column_names_max_height = unit(150, "cm"))+
 Heatmap(X.D, rect_gp = gpar(col = "black"), name = "Down", cluster_rows = F, cluster_columns = F, col = blueCol_fun, row_names_side = "left", column_title = "Down",  column_names_gp = gpar(fontsize = 14, fontface="bold", col = celltype_colors[colnames(X.D)]), row_names_gp = gpar(fontsize = 14, fontface="bold"), column_title_gp = gpar(fontsize = 18, fontface="bold"), row_title_gp = gpar(fontsize = 18, fontface="bold"), row_names_max_width = unit(150, "cm"), column_names_max_height = unit(150, "cm"))
 
 storeFigure(ht, "TF_module_purple_ChEA_scores_final", extension = "pdf", width = 8, height = 8, figures.path = figures.path)
-
 ```
-
-
-
-
 
 ## Analyze TGs with CUTTag
 ```{r}
@@ -512,7 +430,6 @@ CUTTag = CUTTag[-2]
 
 CUTTAG.vs.DE.up = assess.genesets(Up.genes, CUTTag, nrow(pb.sce), correct = "local")
 CUTTAG.vs.DE.down = assess.genesets(Down.genes, CUTTag, nrow(pb.sce), correct = "local")
-
 
 X.U = (CUTTAG.vs.DE.up)
 X.D = (CUTTAG.vs.DE.down)
@@ -524,11 +441,8 @@ redCol_fun = circlize::colorRamp2(c(0, exp(quantile(log(X.U)[X.U > -log10(0.05)]
 
 blueCol_fun = circlize::colorRamp2(c(0, exp(quantile(log(X.D)[X.D > -log10(0.05)], seq(0.05, 0.99, length.out = 12)))), c("#ffffff", pals::brewer.blues(12)))
 
-
 ht = Heatmap(X.U, rect_gp = gpar(col = "black"), name = "Up", column_title = "Up", cluster_rows = F, cluster_columns = F, col = redCol_fun, row_names_side = "left",  column_names_gp = gpar(fontsize = 14, fontface="bold"), row_names_gp = gpar(fontsize = 14, fontface="bold", col = celltype_colors), column_title_gp = gpar(fontsize = 12, fontface="bold"), row_title_gp = gpar(fontsize = 12, fontface="bold"), row_names_max_width = unit(150, "cm"), column_names_max_height = unit(150, "cm"))+
 Heatmap(X.D, rect_gp = gpar(col = "black"), name = "Down", cluster_rows = F, cluster_columns = F, col = blueCol_fun, row_names_side = "left", column_title = "Down",  column_names_gp = gpar(fontsize = 14, fontface="bold"), row_names_gp = gpar(fontsize = 14, fontface="bold"), column_title_gp = gpar(fontsize = 12, fontface="bold"), row_title_gp = gpar(fontsize = 12, fontface="bold"), row_names_max_width = unit(150, "cm"), column_names_max_height = unit(150, "cm"))
 
 storeFigure(ht, "CUTTag_vs_DE_genes_final", extension = "pdf", width = 4, height = 6, figures.path = figures.path)
-
 ```
-
