@@ -1,7 +1,8 @@
 # Data and output locations for the snSZ notebooks.
 #
 # Every notebook sources this file. Set the environment variables below (for
-# example in ~/.Renviron) instead of editing paths inside the notebooks.
+# example in a user-level .Renviron file) instead of editing paths inside the
+# notebooks.
 #
 #   SNSZ_ROOT      Root of the analysis workspace (default: "submission").
 #   SNSZ_DATASETS  Intermediate R objects (RDS); default <root>/datasets.

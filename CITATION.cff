@@ -1,0 +1,58 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the paper below."
+type: software
+title: "snSZ: analysis code for the multi-cohort single-nucleus atlas of schizophrenia"
+version: 1.0.0
+repository-code: "https://github.com/shmohammadi86/snSZ"
+license: MIT
+authors:
+  - family-names: Mohammadi
+    given-names: Shahin
+    email: mohammadi@cytognosis.org
+keywords:
+  - schizophrenia
+  - single-nucleus RNA-seq
+  - prefrontal cortex
+  - differential expression
+  - meta-analysis
+preferred-citation:
+  type: article
+  title: "Single-cell multi-cohort dissection of the schizophrenia transcriptome"
+  journal: Science
+  year: 2024
+  volume: 384
+  issue: 6698
+  start: eadg5136
+  doi: 10.1126/science.adg5136
+  authors:
+    - family-names: Ruzicka
+      given-names: W. Brad
+    - family-names: Mohammadi
+      given-names: Shahin
+    - family-names: Fullard
+      given-names: John F.
+    - family-names: Davila-Velderrain
+      given-names: Jose
+    - family-names: Subburaju
+      given-names: Sivan
+    - family-names: Tso
+      given-names: Daniel Reed
+    - family-names: Hourihan
+      given-names: Makayla
+    - family-names: Jiang
+      given-names: Shan
+    - family-names: Lee
+      given-names: Hao-Chih
+    - family-names: Bendl
+      given-names: Jaroslav
+    - name: PsychENCODE Consortium
+    - family-names: Voloudakis
+      given-names: Georgios
+    - family-names: Haroutunian
+      given-names: Vahram
+    - family-names: Hoffman
+      given-names: Gabriel E.
+    - family-names: Roussos
+      given-names: Panos
+    - family-names: Kellis
+      given-names: Manolis
